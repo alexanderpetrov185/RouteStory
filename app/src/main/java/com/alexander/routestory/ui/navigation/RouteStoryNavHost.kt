@@ -21,8 +21,10 @@ object Routes {
     const val PRO = "pro"
     const val ARG_TRACK_ID = "trackId"
     const val TRACK_DETAIL = "track/{$ARG_TRACK_ID}"
+    const val TRACK_SUMMARY = "summary/{$ARG_TRACK_ID}"
 
     fun trackDetail(id: Long) = "track/$id"
+    fun trackSummary(id: Long) = "summary/$id"
 }
 
 @Composable
@@ -42,7 +44,13 @@ fun RouteStoryNavHost(modifier: Modifier = Modifier) {
             )
         }
         composable(Routes.TRACKING) {
-            TrackingScreen()
+            TrackingScreen(
+                onTrackSaved = { trackId ->
+                    navController.navigate(Routes.trackSummary(trackId)) {
+                        popUpTo(Routes.HOME)
+                    }
+                }
+            )
         }
         composable(Routes.PRO) {
             ProScreen(onBack = { navController.popBackStack() })
@@ -60,6 +68,16 @@ fun RouteStoryNavHost(modifier: Modifier = Modifier) {
             TrackDetailScreen(
                 onBack = { navController.popBackStack() },
                 onOpenPro = { navController.navigate(Routes.PRO) }
+            )
+        }
+        composable(
+            route = Routes.TRACK_SUMMARY,
+            arguments = listOf(navArgument(Routes.ARG_TRACK_ID) { type = NavType.LongType })
+        ) {
+            TrackDetailScreen(
+                onBack = { navController.popBackStack() },
+                onOpenPro = { navController.navigate(Routes.PRO) },
+                isSummary = true
             )
         }
     }

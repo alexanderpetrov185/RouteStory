@@ -52,4 +52,7 @@
     <string name="gps_disabled">GPS отключён</string>
     <string name="action_open_settings">Открыть настройки</string>
     <string name="pro_banner">Pro: без водяного знака, видео до 60 сек</string>
+    <string name="trip_summary">Итоги поездки</string>
+    <string name="action_done">Готово</string>
+    <string name="track_not_saved">Недостаточно данных для сохранения</string>
 </resources>

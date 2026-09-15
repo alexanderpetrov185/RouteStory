@@ -6,10 +6,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import com.alexander.routestory.domain.TrackingUiState
 import com.alexander.routestory.service.TrackRecordingService
+import com.alexander.routestory.service.TrackSaveOutcome
 import com.alexander.routestory.service.TrackingStateHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import javax.inject.Inject
 
@@ -20,12 +20,14 @@ class TrackingViewModel @Inject constructor(
 ) : ViewModel() {
 
     val uiState: StateFlow<TrackingUiState> = stateHolder.uiState
-    val trackSaved: SharedFlow<Unit> = stateHolder.trackSaved
+    val saveOutcome: StateFlow<TrackSaveOutcome?> = stateHolder.saveOutcome
 
     fun start() = sendAction(TrackRecordingService.ACTION_START, foreground = true)
     fun pause() = sendAction(TrackRecordingService.ACTION_PAUSE)
     fun resume() = sendAction(TrackRecordingService.ACTION_START, foreground = true)
     fun stop() = sendAction(TrackRecordingService.ACTION_STOP)
+
+    fun consumeSaveOutcome() = stateHolder.consumeSaveOutcome()
 
     private fun sendAction(action: String, foreground: Boolean = false) {
         val intent = Intent(context, TrackRecordingService::class.java).setAction(action)

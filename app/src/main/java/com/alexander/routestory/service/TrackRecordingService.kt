@@ -27,6 +27,10 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.Priority
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -47,6 +51,9 @@ class TrackRecordingService : LifecycleService() {
     private var accumulatedMs = 0L
     private var segmentStartMs = 0L
     private var totalDistanceM = 0f
+    private var lastSpeedMps = 0f
+    private var lastPointTimeMs = 0L
+    private var tickJob: Job? = null
 
     @Volatile
     private var recording = false
@@ -80,6 +87,7 @@ class TrackRecordingService : LifecycleService() {
         if (currentState == TrackingState.IDLE) {
             points.clear()
             totalDistanceM = 0f
+            lastSpeedMps = 0f
             accumulatedMs = 0L
             startTime = now
             segmentStartMs = now
@@ -89,17 +97,23 @@ class TrackRecordingService : LifecycleService() {
             segmentStartMs = now
         }
         recording = true
+        lastPointTimeMs = now
+        startTicker()
         requestLocationUpdates()
-        stateHolder.update { it.copy(state = TrackingState.RECORDING) }
+        stateHolder.update { it.copy(state = TrackingState.RECORDING, speedMps = 0f) }
         updateNotification()
     }
 
     private fun pauseRecording() {
         if (!recording) return
         recording = false
+        stopTicker()
         safeRemoveLocationUpdates()
         accumulatedMs += System.currentTimeMillis() - segmentStartMs
-        stateHolder.update { it.copy(state = TrackingState.PAUSED, durationMs = accumulatedMs) }
+        lastSpeedMps = 0f
+        stateHolder.update {
+            it.copy(state = TrackingState.PAUSED, durationMs = accumulatedMs, speedMps = 0f)
+        }
         updateNotification()
     }
 
@@ -108,6 +122,7 @@ class TrackRecordingService : LifecycleService() {
             accumulatedMs += System.currentTimeMillis() - segmentStartMs
             recording = false
         }
+        stopTicker()
         safeRemoveLocationUpdates()
         val snapshot = points.toList()
         val name = trackName
@@ -115,26 +130,33 @@ class TrackRecordingService : LifecycleService() {
         val end = System.currentTimeMillis()
         val distance = totalDistanceM
         val duration = accumulatedMs
+        points.clear()
+        totalDistanceM = 0f
+        lastSpeedMps = 0f
+        stateHolder.reset()
         lifecycleScope.launch {
-            if (snapshot.size >= 2) {
-                repository.saveTrack(
-                    Track(
-                        name = name,
-                        startTime = start,
-                        endTime = end,
-                        distance = distance,
-                        duration = duration,
-                        points = snapshot
-                    )
-                )
+            // The service is torn down right after saving, so the write must not be cancellable.
+            val trackId = withContext(NonCancellable + Dispatchers.IO) {
+                if (snapshot.isEmpty()) {
+                    null
+                } else {
+                    runCatching {
+                        repository.saveTrack(
+                            Track(
+                                name = name,
+                                startTime = start,
+                                endTime = end,
+                                distance = distance,
+                                duration = duration,
+                                points = snapshot
+                            )
+                        )
+                    }.getOrNull()
+                }
             }
-            points.clear()
-            stateHolder.reset()
-            stateHolder.notifyTrackSaved()
-            withContext(Dispatchers.Main) {
-                ServiceCompat.stopForeground(this@TrackRecordingService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            }
+            if (trackId != null) stateHolder.notifySaved(trackId) else stateHolder.notifyDiscarded()
+            ServiceCompat.stopForeground(this@TrackRecordingService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
         }
     }
 
@@ -149,17 +171,58 @@ class TrackRecordingService : LifecycleService() {
         )
         val previous = points.lastOrNull()
         if (!LocationFilter.shouldAccept(previous, candidate)) return
-        if (previous != null) totalDistanceM += GeoUtils.distanceMeters(previous, candidate)
+        if (LocationFilter.isSignificantMove(previous, candidate)) {
+            previous?.let { totalDistanceM += GeoUtils.distanceMeters(it, candidate) }
+        }
         points.add(candidate)
+        lastPointTimeMs = System.currentTimeMillis()
+        lastSpeedMps = if (location.hasSpeed() && location.speed > 0f) {
+            location.speed
+        } else {
+            computedSpeed()
+        }
+        pushLiveState()
+    }
+
+    /** Speed derived from the last two recorded points, used when the fix reports no speed. */
+    private fun computedSpeed(): Float {
+        if (points.size < 2) return 0f
+        val previous = points[points.size - 2]
+        val last = points.last()
+        val dtSec = (last.timestamp - previous.timestamp) / 1000f
+        if (dtSec <= 0f) return 0f
+        return GeoUtils.distanceMeters(previous, last) / dtSec
+    }
+
+    /** Publishes the live telemetry; used both on new fixes and by the ticker. */
+    private fun pushLiveState() {
         val now = System.currentTimeMillis()
+        val liveDurationMs = accumulatedMs + if (recording) now - segmentStartMs else 0L
+        val speedOutdated = recording && now - lastPointTimeMs > SPEED_STALE_MS
         stateHolder.update {
             it.copy(
                 points = points.toList(),
                 distanceMeters = totalDistanceM,
-                durationMs = accumulatedMs + (now - segmentStartMs),
-                speedMps = candidate.speed
+                durationMs = liveDurationMs,
+                speedMps = if (speedOutdated) 0f else lastSpeedMps
             )
         }
+    }
+
+    /** Keeps the timer running even while no GPS fixes are accepted. */
+    private fun startTicker() {
+        stopTicker()
+        tickJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(TICK_MS)
+                if (recording) pushLiveState()
+            }
+        }
+    }
+
+    private fun stopTicker() {
+        tickJob?.cancel()
+        tickJob = null
     }
 
     /** Location updates require a granted permission; a revoked one must not crash the service. */
@@ -244,5 +307,8 @@ class TrackRecordingService : LifecycleService() {
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1
         private const val UPDATE_INTERVAL_MS = 2000L
+        private const val TICK_MS = 500L
+        /** After this long without an accepted fix the displayed speed drops to zero. */
+        private const val SPEED_STALE_MS = 10_000L
     }
 }

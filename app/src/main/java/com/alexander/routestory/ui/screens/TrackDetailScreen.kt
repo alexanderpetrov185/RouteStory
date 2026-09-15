@@ -70,7 +70,13 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TrackDetailScreen(onBack: () -> Unit, onOpenPro: () -> Unit = {}, viewModel: TrackDetailViewModel = hiltViewModel()) {
+fun TrackDetailScreen(
+    onBack: () -> Unit,
+    onOpenPro: () -> Unit = {},
+    isSummary: Boolean = false,
+    onDone: () -> Unit = onBack,
+    viewModel: TrackDetailViewModel = hiltViewModel()
+) {
     val track by viewModel.track.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -100,15 +106,22 @@ fun TrackDetailScreen(onBack: () -> Unit, onOpenPro: () -> Unit = {}, viewModel:
         }
     }
 
+    // The summary screen is opened right after a successful save.
+    LaunchedEffect(isSummary) {
+        if (isSummary) snackbarHostState.showSnackbar(context.getString(R.string.track_saved))
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.detail_title)) },
+                title = { Text(stringResource(if (isSummary) R.string.trip_summary else R.string.detail_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                    if (!isSummary) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        }
                     }
                 }
             )
@@ -219,6 +232,11 @@ fun TrackDetailScreen(onBack: () -> Unit, onOpenPro: () -> Unit = {}, viewModel:
                         stringResource(R.string.action_delete),
                         color = MaterialTheme.colorScheme.error
                     )
+                }
+                if (isSummary) {
+                    Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.action_done))
+                    }
                 }
             }
         }
@@ -366,7 +384,7 @@ fun TrackDetailScreen(onBack: () -> Unit, onOpenPro: () -> Unit = {}, viewModel:
                 TextButton(onClick = {
                     showDeleteDialog = false
                     viewModel.deleteTrack()
-                    onBack()
+                    onDone()
                 }) {
                     Text(stringResource(R.string.action_delete))
                 }

@@ -26,6 +26,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,25 +39,30 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackingState
+import com.alexander.routestory.service.TrackSaveOutcome
 import com.alexander.routestory.utils.GeoUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TrackingScreen(viewModel: TrackingViewModel = hiltViewModel()) {
+fun TrackingScreen(
+    onTrackSaved: (Long) -> Unit = {},
+    viewModel: TrackingViewModel = hiltViewModel()
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
     var hasPermissions by remember { mutableStateOf(false) }
     var gpsEnabled by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        gpsEnabled = try {
-            (context.getSystemService(Context.LOCATION_SERVICE) as LocationManager)
-                .isProviderEnabled(LocationManager.GPS_PROVIDER)
-        } catch (_: Exception) { false }
+        gpsEnabled = isGpsEnabled(context)
     }
 
     val permissions = remember {
@@ -78,9 +84,33 @@ fun TrackingScreen(viewModel: TrackingViewModel = hiltViewModel()) {
         if (!hasPermissions) permissionLauncher.launch(permissions)
     }
 
+    // Permissions and the GPS switch can change while the app is in the background.
+    DisposableEffect(lifecycleOwner, permissions) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                gpsEnabled = isGpsEnabled(context)
+                hasPermissions = permissions.all {
+                    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     LaunchedEffect(Unit) {
-        viewModel.trackSaved.collect {
-            snackbarHostState.showSnackbar(context.getString(R.string.track_saved))
+        viewModel.saveOutcome.collect { outcome ->
+            when (outcome) {
+                is TrackSaveOutcome.Saved -> {
+                    viewModel.consumeSaveOutcome()
+                    onTrackSaved(outcome.trackId)
+                }
+                TrackSaveOutcome.Discarded -> {
+                    viewModel.consumeSaveOutcome()
+                    snackbarHostState.showSnackbar(context.getString(R.string.track_not_saved))
+                }
+                null -> Unit
+            }
         }
     }
 
@@ -158,4 +188,12 @@ private fun StatItem(label: String, value: String) {
         Text(text = value, style = MaterialTheme.typography.titleLarge)
         Text(text = label, style = MaterialTheme.typography.bodySmall)
     }
+}
+
+/** Reads the system GPS switch without throwing when the provider is unavailable. */
+private fun isGpsEnabled(context: Context): Boolean = try {
+    (context.getSystemService(Context.LOCATION_SERVICE) as LocationManager)
+        .isProviderEnabled(LocationManager.GPS_PROVIDER)
+} catch (_: Exception) {
+    false
 }
