@@ -53,6 +53,7 @@ dependencies {
     implementation(libs.androidx.exifinterface)
     implementation(libs.billing.ktx)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.maplibre.android.sdk)
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)
     ksp(libs.hilt.compiler)

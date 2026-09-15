@@ -142,7 +142,8 @@ fun TrackingScreen(
                 points = state.points,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
+                    .weight(1f),
+                followLastPoint = true
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
