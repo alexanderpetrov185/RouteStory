@@ -42,4 +42,14 @@
     <string name="action_share">Поделиться</string>
     <string name="action_close">Закрыть</string>
     <string name="video_error">Ошибка генерации видео</string>
+    <string name="pro_title">RouteStory Pro</string>
+    <string name="pro_active">Pro активен</string>
+    <string name="pro_benefit_watermark">Без водяного знака</string>
+    <string name="pro_benefit_duration">Видео до 60 секунд</string>
+    <string name="pro_benefit_photos">Все фото в видео</string>
+    <string name="action_buy_pro">Купить Pro</string>
+    <string name="action_activate_demo">Включить Pro (демо)</string>
+    <string name="gps_disabled">GPS отключён</string>
+    <string name="action_open_settings">Открыть настройки</string>
+    <string name="pro_banner">Pro: без водяного знака, видео до 60 сек</string>
 </resources>

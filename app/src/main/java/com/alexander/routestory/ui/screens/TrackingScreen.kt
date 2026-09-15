@@ -1,7 +1,11 @@
 package com.alexander.routestory.ui.screens
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
+import android.provider.Settings
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -12,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -32,7 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackingState
@@ -45,6 +50,14 @@ fun TrackingScreen(viewModel: TrackingViewModel = hiltViewModel()) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     var hasPermissions by remember { mutableStateOf(false) }
+    var gpsEnabled by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        gpsEnabled = try {
+            (context.getSystemService(Context.LOCATION_SERVICE) as LocationManager)
+                .isProviderEnabled(LocationManager.GPS_PROVIDER)
+        } catch (_: Exception) { false }
+    }
 
     val permissions = remember {
         buildList {
@@ -83,6 +96,18 @@ fun TrackingScreen(viewModel: TrackingViewModel = hiltViewModel()) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (!gpsEnabled) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(stringResource(R.string.gps_disabled))
+                        OutlinedButton(onClick = {
+                            context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                        }) {
+                            Text(stringResource(R.string.action_open_settings))
+                        }
+                    }
+                }
+            }
             RouteMapPlaceholder(
                 points = state.points,
                 modifier = Modifier

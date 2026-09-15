@@ -8,7 +8,9 @@ import androidx.lifecycle.viewModelScope
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.domain.TrackRepository
+import com.alexander.routestory.data.ProRepository
 import com.alexander.routestory.service.VideoExportState
+import com.alexander.routestory.video.VideoLimits
 import com.alexander.routestory.service.VideoExportStateHolder
 import com.alexander.routestory.video.VideoExportUseCase
 import com.alexander.routestory.utils.GpxExporter
@@ -19,7 +21,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -31,7 +36,8 @@ class TrackDetailViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: TrackRepository,
     private val videoExportUseCase: VideoExportUseCase,
-    private val videoStateHolder: VideoExportStateHolder
+    private val videoStateHolder: VideoExportStateHolder,
+    private val proRepository: ProRepository
 ) : ViewModel() {
 
     private val trackId: Long = savedStateHandle.get<Long>(ARG_TRACK_ID) ?: -1L
@@ -43,6 +49,9 @@ class TrackDetailViewModel @Inject constructor(
     val exportResult: SharedFlow<Boolean> = _exportResult.asSharedFlow()
 
     val videoState: StateFlow<VideoExportState> = videoStateHolder.state
+
+    val isPro: StateFlow<Boolean> = proRepository.isPro
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     init {
         viewModelScope.launch { _track.value = repository.getTrack(trackId) }
@@ -91,12 +100,15 @@ class TrackDetailViewModel @Inject constructor(
 
     fun createVideo(track: Track) {
         if (videoStateHolder.state.value is VideoExportState.Running) return
-        videoStateHolder.job = videoStateHolder.scope.launch {
-            val file = videoExportUseCase.export(track) { videoStateHolder.setRunning(it) }
+        viewModelScope.launch {
+            val limits = VideoLimits.resolve(proRepository.isPro.first())
+            videoStateHolder.job = videoStateHolder.scope.launch {
+                val file = videoExportUseCase.export(track, limits) { videoStateHolder.setRunning(it) }
             if (file != null) {
                 videoStateHolder.setDone(file)
-            } else if (videoStateHolder.state.value !is VideoExportState.Idle) {
-                videoStateHolder.setFailed()
+                } else if (videoStateHolder.state.value !is VideoExportState.Idle) {
+                    videoStateHolder.setFailed()
+                }
             }
         }
     }

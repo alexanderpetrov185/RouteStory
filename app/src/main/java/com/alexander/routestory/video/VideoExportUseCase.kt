@@ -27,7 +27,7 @@ class VideoExportUseCase @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
 
-    suspend fun export(track: Track, onProgress: (Float) -> Unit): File? = withContext(Dispatchers.Default) {
+    suspend fun export(track: Track, limits: VideoLimits, onProgress: (Float) -> Unit): File? = withContext(Dispatchers.Default) {
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
         var outFile: File? = null
@@ -36,15 +36,15 @@ class VideoExportUseCase @Inject constructor(
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
             outFile = dest
-            val renderer = RouteFrameRenderer()
-            val frameCount = VideoFreeLimits.DURATION_SEC * VideoFreeLimits.FPS
-            val bitmap = Bitmap.createBitmap(VideoFreeLimits.WIDTH, VideoFreeLimits.HEIGHT, Bitmap.Config.ARGB_8888)
+            val renderer = RouteFrameRenderer(limits)
+            val frameCount = limits.durationSec * limits.fps
+            val bitmap = Bitmap.createBitmap(limits.width, limits.height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
 
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, VideoFreeLimits.WIDTH, VideoFreeLimits.HEIGHT).apply {
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, limits.width, limits.height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-                setInteger(MediaFormat.KEY_FRAME_RATE, VideoFreeLimits.FPS)
-                setInteger(MediaFormat.KEY_BIT_RATE, VideoFreeLimits.BITRATE)
+                setInteger(MediaFormat.KEY_FRAME_RATE, limits.fps)
+                setInteger(MediaFormat.KEY_BIT_RATE, limits.bitrate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -70,10 +70,10 @@ class VideoExportUseCase @Inject constructor(
                         if (image != null) {
                             renderer.render(track, frame, frameCount, canvas)
                             copyBitmapToImage(bitmap, image)
-                            val ptsUs = frame * 1_000_000L / VideoFreeLimits.FPS
+                            val ptsUs = frame * 1_000_000L / limits.fps
                             val isLast = frame == frameCount - 1
                             val flags = if (isLast) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
-                            codec.queueInputBuffer(inIndex, 0, VideoFreeLimits.WIDTH * VideoFreeLimits.HEIGHT * 3 / 2, ptsUs, flags)
+                            codec.queueInputBuffer(inIndex, 0, limits.width * limits.height * 3 / 2, ptsUs, flags)
                             if (isLast) eosSent = true
                             frame++
                             onProgress(frame.toFloat() / frameCount)

@@ -13,7 +13,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /** Renders a single video frame: animated route, photos, stats and a watermark. */
-class RouteFrameRenderer {
+class RouteFrameRenderer(private val limits: VideoLimits) {
 
     private val bgPaint = Paint().apply { color = Color.rgb(22, 28, 38) }
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -108,8 +108,8 @@ class RouteFrameRenderer {
         }
 
         // Photo overlays with fade in/out (about 0.6 s at the video timeline)
-        val fadeFrames = (VideoFreeLimits.FPS * 0.6f).toInt().coerceAtLeast(1)
-        val photos = track.photos
+        val fadeFrames = (limits.fps * 0.6f).toInt().coerceAtLeast(1)
+        val photos = track.photos.sortedBy { kotlin.math.abs(it.timestamp - trackTime) }.take(limits.maxPhotos)
         for (photo in photos) {
             val photoProgress =
                 ((photo.timestamp - track.startTime).toFloat() / (track.endTime - track.startTime).coerceAtLeast(1)).coerceIn(0f, 1f)
@@ -136,7 +136,9 @@ class RouteFrameRenderer {
             GeoUtils.formatDistance(track.distance) + ", " + GeoUtils.formatDuration(track.duration),
             28f, h - 74f, statsPaint
         )
-        canvas.drawText(VideoFreeLimits.WATERMARK, w - 28f - watermarkPaint.measureText(VideoFreeLimits.WATERMARK), h - 28f, watermarkPaint)
+        limits.watermark?.let { wm ->
+            canvas.drawText(wm, w - 28f - watermarkPaint.measureText(wm), h - 28f, watermarkPaint)
+        }
     }
 
     private fun decodePhoto(path: String, maxDim: Int): Bitmap? {

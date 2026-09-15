@@ -25,7 +25,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -56,7 +58,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.Track
@@ -68,11 +70,12 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TrackDetailScreen(onBack: () -> Unit, viewModel: TrackDetailViewModel = hiltViewModel()) {
+fun TrackDetailScreen(onBack: () -> Unit, onOpenPro: () -> Unit = {}, viewModel: TrackDetailViewModel = hiltViewModel()) {
     val track by viewModel.track.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val videoState by viewModel.videoState.collectAsStateWithLifecycle()
+    val isPro by viewModel.isPro.collectAsStateWithLifecycle()
     var showDeleteDialog by remember { mutableStateOf(false) }
     var selectedPhoto by remember { mutableStateOf<TrackPhoto?>(null) }
     var showShiftDialog by remember { mutableStateOf(false) }
@@ -186,6 +189,27 @@ fun TrackDetailScreen(onBack: () -> Unit, viewModel: TrackDetailViewModel = hilt
                     enabled = videoState !is VideoExportState.Running
                 ) {
                     Text(stringResource(R.string.action_create_video))
+                }
+                if (!isPro) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenPro)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Filled.Star,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                stringResource(R.string.pro_banner),
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(start = 12.dp)
+                            )
+                        }
+                    }
                 }
                 OutlinedButton(
                     onClick = { showDeleteDialog = true },

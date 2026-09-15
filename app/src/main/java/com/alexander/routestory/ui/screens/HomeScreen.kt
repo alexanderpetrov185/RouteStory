@@ -5,7 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -23,7 +28,8 @@ import com.alexander.routestory.R
 fun HomeScreen(
     modifier: Modifier = Modifier,
     onStartTracking: () -> Unit = {},
-    onOpenHistory: () -> Unit = {}
+    onOpenHistory: () -> Unit = {},
+    onOpenPro: () -> Unit = {}
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -41,10 +47,16 @@ fun HomeScreen(
             ) {
                 Text(text = stringResource(R.string.ready_to_work))
                 Button(onClick = onStartTracking) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
                     Text(text = stringResource(R.string.action_start))
                 }
                 OutlinedButton(onClick = onOpenHistory) {
+                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = null)
                     Text(text = stringResource(R.string.history_button))
+                }
+                OutlinedButton(onClick = onOpenPro) {
+                    Icon(Icons.Filled.Star, contentDescription = null)
+                    Text(text = stringResource(R.string.pro_title))
                 }
             }
         }

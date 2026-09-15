@@ -8,6 +8,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.alexander.routestory.ui.screens.HistoryScreen
+import com.alexander.routestory.ui.screens.ProScreen
 import com.alexander.routestory.ui.screens.HomeScreen
 import com.alexander.routestory.ui.screens.TrackDetailScreen
 import com.alexander.routestory.ui.screens.TrackingScreen
@@ -17,6 +18,7 @@ object Routes {
     const val HOME = "home"
     const val TRACKING = "tracking"
     const val HISTORY = "history"
+    const val PRO = "pro"
     const val ARG_TRACK_ID = "trackId"
     const val TRACK_DETAIL = "track/{$ARG_TRACK_ID}"
 
@@ -35,11 +37,15 @@ fun RouteStoryNavHost(modifier: Modifier = Modifier) {
         composable(Routes.HOME) {
             HomeScreen(
                 onStartTracking = { navController.navigate(Routes.TRACKING) },
-                onOpenHistory = { navController.navigate(Routes.HISTORY) }
+                onOpenHistory = { navController.navigate(Routes.HISTORY) },
+                onOpenPro = { navController.navigate(Routes.PRO) }
             )
         }
         composable(Routes.TRACKING) {
             TrackingScreen()
+        }
+        composable(Routes.PRO) {
+            ProScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.HISTORY) {
             HistoryScreen(
@@ -51,7 +57,10 @@ fun RouteStoryNavHost(modifier: Modifier = Modifier) {
             route = Routes.TRACK_DETAIL,
             arguments = listOf(navArgument(Routes.ARG_TRACK_ID) { type = NavType.LongType })
         ) {
-            TrackDetailScreen(onBack = { navController.popBackStack() })
+            TrackDetailScreen(
+                onBack = { navController.popBackStack() },
+                onOpenPro = { navController.navigate(Routes.PRO) }
+            )
         }
     }
 }
