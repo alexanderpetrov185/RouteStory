@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      MapLibre renders through OpenGL. Emulated GPUs are the main source of native SIGSEGV
+      crashes, so the map is disabled on emulators by default and the canvas renderer is used.
+      Set this to true (or edit it temporarily) to exercise the real map on an emulator.
+    -->
+    <bool name="map_use_on_emulator">false</bool>
+</resources>

@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -32,11 +33,14 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackPoint
+import com.alexander.routestory.utils.MapAvailability
 import com.alexander.routestory.utils.MapTiles
+import kotlinx.coroutines.delay
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.CircleLayer
@@ -59,11 +63,14 @@ private const val MARKER_RADIUS = 6f
 private const val MARKER_STROKE = 2f
 private const val TAP_RADIUS_PX = 30f
 private const val BOUNDS_PADDING_PX = 64
+private const val STYLE_TIMEOUT_MS = 8_000L
 
 /**
- * Route preview on top of MapLibre + OpenStreetMap tiles.
- * Falls back to a plain canvas rendering when the map cannot be initialised,
- * so the screens keep working offline and on devices without OpenGL ES.
+ * Route preview on top of MapLibre + OpenFreeMap tiles.
+ *
+ * Falls back to a plain canvas rendering when the map must not or cannot be used. The native
+ * renderer is only started after the first layout pass and every call is guarded by the view
+ * destroyed state, because MapLibre itself does not check it.
  */
 @Composable
 fun RouteMapPlaceholder(
@@ -74,41 +81,51 @@ fun RouteMapPlaceholder(
     followLastPoint: Boolean = false
 ) {
     val context = LocalContext.current
-    val styleJson = remember { MapTiles.loadStyleJson(context) }
-    var mapUnavailable by remember { mutableStateOf(false) }
+    // Decided once per screen visit: swapping renderers mid-flight would destroy a live
+    // MapView while its renderer is still drawing.
+    val mapAllowed = remember { MapAvailability.canUseMap(context.applicationContext) }
+    var useCanvas by remember { mutableStateOf(!mapAllowed) }
     var online by remember { mutableStateOf(true) }
 
-    LaunchedEffect(Unit) { online = MapTiles.isOnline(context) }
+    LaunchedEffect(Unit) { online = MapTiles.isOnline(context.applicationContext) }
 
-    if (styleJson == null || mapUnavailable) {
-        RouteMapCanvas(
-            points = points,
-            photoPositions = photoPositions,
-            onPhotoTap = onPhotoTap,
-            modifier = modifier
-        )
-        return
-    }
-
-    Box(modifier = modifier) {
-        MapLibreRouteMap(
-            styleJson = styleJson,
-            points = points,
-            photoPositions = photoPositions,
-            onPhotoTap = onPhotoTap,
-            followLastPoint = followLastPoint,
-            onUnavailable = { mapUnavailable = true },
-            modifier = Modifier.fillMaxSize()
-        )
-        if (!online) {
-            Card(modifier = Modifier.align(Alignment.TopCenter).padding(8.dp)) {
-                Text(
-                    text = stringResource(R.string.map_no_network),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(8.dp)
+    if (useCanvas) {
+        Box(modifier = modifier) {
+            RouteMapCanvas(
+                points = points,
+                photoPositions = photoPositions,
+                onPhotoTap = onPhotoTap,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (!mapAllowed) {
+                MapNotice(
+                    text = stringResource(R.string.map_unavailable),
+                    modifier = Modifier.align(Alignment.TopCenter)
                 )
             }
         }
+        return
+    }
+
+    MapLibreRouteMap(
+        points = points,
+        photoPositions = photoPositions,
+        onPhotoTap = onPhotoTap,
+        followLastPoint = followLastPoint,
+        online = online,
+        onCreationFailed = { useCanvas = true },
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun MapNotice(text: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier.padding(8.dp)) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(8.dp)
+        )
     }
 }
 
@@ -122,42 +139,75 @@ private class MapHolder {
     var onPhotoTap: ((Int) -> Unit)? = null
     var lastBoundsKey: String? = null
     var userPanned = false
+    var styleReady = false
     private var started = false
     private var resumed = false
     private var destroyed = false
 
     fun start() {
         if (destroyed || started) return
+        val view = mapView ?: return
+        if (runCatching { view.isDestroyed() }.getOrDefault(true)) return
         started = true
-        runCatching { mapView?.onStart() }
+        runCatching { view.onStart() }
     }
 
     fun resume() {
-        if (destroyed || resumed) return
+        if (destroyed) return
+        val view = mapView ?: return
+        if (runCatching { view.isDestroyed() }.getOrDefault(true)) return
+        if (!started) start()
+        if (resumed) return
         resumed = true
-        runCatching { mapView?.onResume() }
+        runCatching { view.onResume() }
     }
 
     fun pause() {
         if (destroyed || !resumed) return
         resumed = false
-        runCatching { mapView?.onPause() }
+        val view = mapView ?: return
+        if (runCatching { view.isDestroyed() }.getOrDefault(true)) return
+        runCatching { view.onPause() }
     }
 
     fun stop() {
         if (destroyed || !started) return
         started = false
-        runCatching { mapView?.onStop() }
+        resumed = false
+        val view = mapView ?: return
+        if (runCatching { view.isDestroyed() }.getOrDefault(true)) return
+        runCatching { view.onStop() }
     }
 
     fun destroy() {
-        if (destroyed) return
+        if (destroyed) {
+            clearReferences()
+            return
+        }
         destroyed = true
         started = false
         resumed = false
-        runCatching { mapView?.onDestroy() }
-        mapView = null
+        val view = mapView
+        if (view != null && runCatching { view.isDestroyed() }.getOrDefault(true)) {
+            clearReferences()
+            return
+        }
+        runCatching { view?.onPause() }
+        runCatching { view?.onStop() }
+        runCatching { view?.onDestroy() }
+        clearReferences()
+    }
+
+    /** True only when it is safe to touch the map or its view. */
+    fun isAlive(): Boolean {
+        if (destroyed) return false
+        val view = mapView ?: return false
+        return runCatching { !view.isDestroyed() }.getOrDefault(false)
+    }
+
+    private fun clearReferences() {
         map = null
+        mapView = null
         routeSource = null
         photosSource = null
     }
@@ -262,61 +312,124 @@ private fun boundsKey(points: List<TrackPoint>): String {
 
 @Composable
 private fun MapLibreRouteMap(
-    styleJson: String,
     points: List<TrackPoint>,
     photoPositions: List<Pair<Double, Double>>,
     onPhotoTap: ((Int) -> Unit)?,
     followLastPoint: Boolean,
-    onUnavailable: () -> Unit,
+    online: Boolean,
+    onCreationFailed: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val appContext = remember(context) { context.applicationContext }
     val lifecycleOwner = LocalLifecycleOwner.current
-    val holder = remember { MapHolder() }
     val lineColor = MaterialTheme.colorScheme.primary.toArgb()
     val markerColor = MaterialTheme.colorScheme.tertiary.toArgb()
-
+    val holder = remember { MapHolder() }
     holder.photos = photoPositions
     holder.onPhotoTap = onPhotoTap
+    var laidOut by remember { mutableStateOf(false) }
+    var styleTimedOut by remember { mutableStateOf(false) }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            val view = runCatching { MapView(context) }.getOrNull()
-            if (view == null) {
-                onUnavailable()
-                FrameLayout(context)
-            } else {
-                holder.mapView = view
-                view.getMapAsync { map ->
+    LaunchedEffect(Unit) {
+        delay(STYLE_TIMEOUT_MS)
+        if (!holder.styleReady && holder.isAlive()) styleTimedOut = true
+    }
+
+    // Renderer starts only after the first layout pass; guarded by destroyed state.
+    LaunchedEffect(laidOut) {
+        if (laidOut) {
+            holder.start()
+            holder.resume()
+        }
+    }
+
+    Box(modifier = modifier) {
+        AndroidView(
+            factory = { ctx ->
+                holder.destroy()
+                val options = MapLibreMapOptions.createFromAttributes(ctx)
+                    .textureMode(true)
+                    .compassEnabled(false)
+                    .logoEnabled(false)
+                    .attributionEnabled(true)
+                val created = runCatching {
+                    MapAvailability.markAttemptStarted(appContext)
+                    MapView(ctx, options)
+                }.getOrElse {
+                    onCreationFailed()
+                    FrameLayout(ctx)
+                }
+                if (created !is MapView) return@AndroidView created
+                created.layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+                holder.mapView = created
+                holder.map = null
+                holder.routeSource = null
+                holder.photosSource = null
+                holder.lastBoundsKey = null
+                holder.userPanned = false
+                holder.styleReady = false
+                created.getMapAsync { map ->
+                    if (!holder.isAlive()) return@getMapAsync
                     holder.map = map
-                    map.setStyle(
-                        Style.Builder().fromJson(styleJson),
-                        Style.OnStyleLoaded { style ->
-                            holder.attachStyle(style, lineColor, markerColor)
-                            holder.updateRoute(points)
-                            holder.updatePhotos()
-                        }
-                    )
-                    map.addOnMapClickListener { latLng -> holder.handleTap(map, latLng) }
+                    map.addOnMapClickListener { latLng ->
+                        if (holder.map !== map || !holder.isAlive()) return@addOnMapClickListener false
+                        runCatching { holder.handleTap(map, latLng) }.getOrDefault(false)
+                    }
                     map.addOnCameraMoveStartedListener { reason ->
                         if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                             holder.userPanned = true
                         }
                     }
+                    runCatching {
+                        map.setStyle(
+                            Style.Builder().fromUri(MapTiles.STYLE_URI),
+                            object : Style.OnStyleLoaded {
+                                override fun onStyleLoaded(style: Style) {
+                                    if (!holder.isAlive() || holder.map !== map) return
+                                    holder.attachStyle(style, lineColor, markerColor)
+                                    holder.styleReady = true
+                                    MapAvailability.markReady(appContext)
+                                    holder.updateRoute(points)
+                                    holder.updatePhotos()
+                                    holder.updateCamera(map, points, followLastPoint)
+                                }
+                            }
+                        )
+                    }
                 }
-                // The observer can miss the initial lifecycle events, so sync with the host state.
-                val state = lifecycleOwner.lifecycle.currentState
-                if (state.isAtLeast(Lifecycle.State.STARTED)) holder.start()
-                if (state.isAtLeast(Lifecycle.State.RESUMED)) holder.resume()
-                view
-            }
-        },
-        update = {
-            holder.updateRoute(points)
-            holder.updatePhotos()
-            holder.map?.let { map -> holder.updateCamera(map, points, followLastPoint) }
+                created
+            },
+            update = { holder.updateRoute(points) },
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { size ->
+                    if (size.width > 0 && size.height > 0) laidOut = true
+                },
+            onRelease = { holder.destroy() }
+        )
+        if (!online || styleTimedOut) {
+            MapNotice(
+                text = stringResource(R.string.map_no_network),
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
-    )
+    }
+
+    LaunchedEffect(points) {
+        holder.updateRoute(points)
+        val map = holder.map
+        if (map != null && holder.styleReady && holder.isAlive()) {
+            holder.updateCamera(map, points, followLastPoint)
+        }
+    }
+    LaunchedEffect(photoPositions) {
+        holder.photos = photoPositions
+        holder.updatePhotos()
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -332,8 +445,6 @@ private fun MapLibreRouteMap(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            holder.pause()
-            holder.stop()
             holder.destroy()
         }
     }

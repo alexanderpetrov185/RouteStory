@@ -5,19 +5,15 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 
 /**
- * Map configuration. The style sheet lives in assets and is the single place to swap
- * tile providers later (e.g. a vector style instead of the OSM raster tiles).
+ * Map configuration. OpenFreeMap serves OpenStreetMap based vector tiles and needs no API key,
+ * which keeps the map usable without any registration.
  */
 object MapTiles {
-    const val STYLE_ASSET = "route_map_style.json"
+    /** Vector style used for the map. Needs the network on first load; MapLibre caches it after. */
+    const val STYLE_URI = "https://tiles.openfreemap.org/styles/liberty"
 
     /** Zoom level used while the camera follows the live position. */
     const val TRACKING_ZOOM = 16.0
-
-    /** Reads the bundled style; a missing asset disables the map and keeps the canvas renderer. */
-    fun loadStyleJson(context: Context): String? = runCatching {
-        context.assets.open(STYLE_ASSET).bufferedReader().use { it.readText() }
-    }.getOrNull()
 
     /** True when tiles could be downloaded right now. Never throws. */
     fun isOnline(context: Context): Boolean = runCatching {
