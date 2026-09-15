@@ -1,0 +1,32 @@
+<resources>
+    <string name="app_name">RouteStory</string>
+    <string name="tracking_title">Запись маршрута</string>
+    <string name="action_start">Начать запись</string>
+    <string name="action_pause">Пауза</string>
+    <string name="action_resume">Продолжить</string>
+    <string name="action_stop">Стоп</string>
+    <string name="notif_channel_name">Запись трека</string>
+    <string name="notif_title">RouteStory</string>
+    <string name="notif_recording">Идёт запись маршрута…</string>
+    <string name="notif_paused">Запись на паузе</string>
+    <string name="track_saved">Маршрут сохранён</string>
+    <string name="stat_distance">Дистанция</string>
+    <string name="stat_time">Время</string>
+    <string name="stat_speed">Скорость</string>
+    <string name="track_name_prefix">Поездка </string>
+    <string name="ready_to_work">Готов к работе</string>
+    <string name="history_title">История</string>
+    <string name="history_button">История</string>
+    <string name="detail_title">Детали маршрута</string>
+    <string name="action_delete">Удалить</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="delete_confirm_title">Удалить маршрут?</string>
+    <string name="delete_confirm_text">Удаление необратимо</string>
+    <string name="export_gpx">Экспорт GPX</string>
+    <string name="export_done">Экспорт выполнен</string>
+    <string name="export_error">Ошибка экспорта</string>
+    <string name="stat_avg_speed">Средняя скорость</string>
+    <string name="stat_max_speed">Макс. скорость</string>
+    <string name="stat_points">Точки</string>
+    <string name="empty_history">Нет сохранённых маршрутов</string>
+</resources>
