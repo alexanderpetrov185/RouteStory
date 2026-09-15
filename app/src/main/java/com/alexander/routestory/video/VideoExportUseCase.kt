@@ -34,6 +34,7 @@ class VideoExportUseCase @Inject constructor(
         var success = false
         try {
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
+            pruneOldVideos(dir)
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
             outFile = dest
             val renderer = RouteFrameRenderer(limits)
@@ -160,5 +161,13 @@ class VideoExportUseCase @Inject constructor(
                 buffer.put(row * rowStride + col * pixelStride, value.coerceIn(0, 255).toByte())
             }
         }
+    }
+
+    /** Keeps only the newest videos so storage does not grow indefinitely. */
+    private fun pruneOldVideos(dir: File, keep: Int = 4) {
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }
+            ?.sortedByDescending { it.lastModified() }
+            ?: return
+        files.drop(keep).forEach { it.delete() }
     }
 }

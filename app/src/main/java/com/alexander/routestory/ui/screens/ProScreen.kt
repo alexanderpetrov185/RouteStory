@@ -36,6 +36,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.alexander.routestory.BuildConfig
 import com.alexander.routestory.R
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,7 +101,7 @@ fun ProScreen(onBack: () -> Unit, viewModel: ProViewModel = hiltViewModel()) {
                 ) {
                     Text(stringResource(R.string.action_buy_pro))
                 }
-                if (!billingAvailable) {
+                if (!billingAvailable && BuildConfig.DEBUG) {
                     OutlinedButton(
                         onClick = { viewModel.activateDemo() },
                         modifier = Modifier.fillMaxWidth()

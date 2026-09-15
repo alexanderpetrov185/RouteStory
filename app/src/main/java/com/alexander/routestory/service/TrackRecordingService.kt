@@ -97,7 +97,7 @@ class TrackRecordingService : LifecycleService() {
     private fun pauseRecording() {
         if (!recording) return
         recording = false
-        locationClient.removeLocationUpdates(locationCallback)
+        safeRemoveLocationUpdates()
         accumulatedMs += System.currentTimeMillis() - segmentStartMs
         stateHolder.update { it.copy(state = TrackingState.PAUSED, durationMs = accumulatedMs) }
         updateNotification()
@@ -108,7 +108,7 @@ class TrackRecordingService : LifecycleService() {
             accumulatedMs += System.currentTimeMillis() - segmentStartMs
             recording = false
         }
-        locationClient.removeLocationUpdates(locationCallback)
+        safeRemoveLocationUpdates()
         val snapshot = points.toList()
         val name = trackName
         val start = startTime
@@ -162,11 +162,27 @@ class TrackRecordingService : LifecycleService() {
         }
     }
 
+    /** Location updates require a granted permission; a revoked one must not crash the service. */
+    private fun safeRemoveLocationUpdates() {
+        try {
+            locationClient.removeLocationUpdates(locationCallback)
+        } catch (_: SecurityException) {
+            // Permission revoked, nothing to remove
+        }
+    }
+
     private fun requestLocationUpdates() {
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, UPDATE_INTERVAL_MS)
             .setMinUpdateDistanceMeters(0f)
             .build()
-        locationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+        try {
+            locationClient.requestLocationUpdates(request, locationCallback, Looper.getMainLooper())
+        } catch (_: SecurityException) {
+            // Permission revoked mid-session: pause gracefully instead of crashing
+            recording = false
+            stateHolder.update { it.copy(state = TrackingState.PAUSED) }
+            updateNotification()
+        }
     }
 
     private fun startForeground() {
