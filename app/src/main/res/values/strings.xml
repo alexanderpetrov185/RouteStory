@@ -35,4 +35,11 @@
     <string name="action_shift_time">Сдвинуть время</string>
     <string name="shift_minutes_label">Минут</string>
     <string name="action_apply">Применить</string>
+    <string name="action_create_video">Создать видео</string>
+    <string name="video_generating">Генерация видео…</string>
+    <string name="video_done">Видео готово</string>
+    <string name="action_save">Сохранить</string>
+    <string name="action_share">Поделиться</string>
+    <string name="action_close">Закрыть</string>
+    <string name="video_error">Ошибка генерации видео</string>
 </resources>

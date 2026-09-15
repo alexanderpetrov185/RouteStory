@@ -8,6 +8,9 @@ import androidx.lifecycle.viewModelScope
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.domain.TrackRepository
+import com.alexander.routestory.service.VideoExportState
+import com.alexander.routestory.service.VideoExportStateHolder
+import com.alexander.routestory.video.VideoExportUseCase
 import com.alexander.routestory.utils.GpxExporter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -26,7 +29,9 @@ import javax.inject.Inject
 class TrackDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     @ApplicationContext private val context: Context,
-    private val repository: TrackRepository
+    private val repository: TrackRepository,
+    private val videoExportUseCase: VideoExportUseCase,
+    private val videoStateHolder: VideoExportStateHolder
 ) : ViewModel() {
 
     private val trackId: Long = savedStateHandle.get<Long>(ARG_TRACK_ID) ?: -1L
@@ -36,6 +41,8 @@ class TrackDetailViewModel @Inject constructor(
 
     private val _exportResult = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
     val exportResult: SharedFlow<Boolean> = _exportResult.asSharedFlow()
+
+    val videoState: StateFlow<VideoExportState> = videoStateHolder.state
 
     init {
         viewModelScope.launch { _track.value = repository.getTrack(trackId) }
@@ -79,6 +86,38 @@ class TrackDetailViewModel @Inject constructor(
                 }
             }
             _exportResult.tryEmit(result.isSuccess)
+        }
+    }
+
+    fun createVideo(track: Track) {
+        if (videoStateHolder.state.value is VideoExportState.Running) return
+        videoStateHolder.job = videoStateHolder.scope.launch {
+            val file = videoExportUseCase.export(track) { videoStateHolder.setRunning(it) }
+            if (file != null) {
+                videoStateHolder.setDone(file)
+            } else if (videoStateHolder.state.value !is VideoExportState.Idle) {
+                videoStateHolder.setFailed()
+            }
+        }
+    }
+
+    fun cancelVideo() {
+        videoStateHolder.job?.cancel()
+        videoStateHolder.reset()
+    }
+
+    fun consumeVideoResult() {
+        videoStateHolder.reset()
+    }
+
+    fun saveVideoTo(uri: Uri) {
+        val file = (videoStateHolder.state.value as? VideoExportState.Done)?.file ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    file.inputStream().use { it.copyTo(output) }
+                }
+            }
         }
     }
 

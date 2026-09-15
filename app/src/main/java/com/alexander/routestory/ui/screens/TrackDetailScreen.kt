@@ -3,8 +3,11 @@ package com.alexander.routestory.ui.screens
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.widget.VideoView
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -49,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -56,8 +61,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.domain.TrackPhoto
+import com.alexander.routestory.service.VideoExportState
 import com.alexander.routestory.utils.GeoUtils
 import com.alexander.routestory.utils.GpxExporter
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,6 +72,7 @@ fun TrackDetailScreen(onBack: () -> Unit, viewModel: TrackDetailViewModel = hilt
     val track by viewModel.track.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val videoState by viewModel.videoState.collectAsStateWithLifecycle()
     var showDeleteDialog by remember { mutableStateOf(false) }
     var selectedPhoto by remember { mutableStateOf<TrackPhoto?>(null) }
     var showShiftDialog by remember { mutableStateOf(false) }
@@ -72,6 +80,10 @@ fun TrackDetailScreen(onBack: () -> Unit, viewModel: TrackDetailViewModel = hilt
     val pickPhotosLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(10)
     ) { uris -> if (uris.isNotEmpty()) viewModel.addPhotos(uris) }
+
+    val saveVideoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("video/mp4")
+    ) { uri -> uri?.let { viewModel.saveVideoTo(it) } }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/gpx+xml")
@@ -168,6 +180,13 @@ fun TrackDetailScreen(onBack: () -> Unit, viewModel: TrackDetailViewModel = hilt
                 ) {
                     Text(stringResource(R.string.export_gpx))
                 }
+                Button(
+                    onClick = { viewModel.createVideo(current) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = videoState !is VideoExportState.Running
+                ) {
+                    Text(stringResource(R.string.action_create_video))
+                }
                 OutlinedButton(
                     onClick = { showDeleteDialog = true },
                     modifier = Modifier.fillMaxWidth()
@@ -248,6 +267,72 @@ fun TrackDetailScreen(onBack: () -> Unit, viewModel: TrackDetailViewModel = hilt
         )
     }
 
+    if (videoState is VideoExportState.Failed) {
+        LaunchedEffect(videoState) {
+            snackbarHostState.showSnackbar(context.getString(R.string.video_error))
+            viewModel.consumeVideoResult()
+        }
+    }
+
+    when (val videoResult = videoState) {
+        is VideoExportState.Running -> {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text(stringResource(R.string.video_generating)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        LinearProgressIndicator(
+                            progress = { videoResult.progress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(text = (videoResult.progress * 100).toInt().toString() + " %")
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.cancelVideo() }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                }
+            )
+        }
+        is VideoExportState.Done -> {
+            AlertDialog(
+                onDismissRequest = { viewModel.consumeVideoResult() },
+                title = { Text(stringResource(R.string.video_done)) },
+                text = {
+                    AndroidView(
+                        factory = { ctx ->
+                            VideoView(ctx).apply {
+                                setVideoPath(videoResult.file.absolutePath)
+                                setOnCompletionListener { it.start() }
+                                start()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(240.dp)
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        saveVideoLauncher.launch("routestory_" + System.currentTimeMillis() + ".mp4")
+                    }) {
+                        Text(stringResource(R.string.action_save))
+                    }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = { shareVideo(videoResult.file, context) }) {
+                            Text(stringResource(R.string.action_share))
+                        }
+                        TextButton(onClick = { viewModel.consumeVideoResult() }) {
+                            Text(stringResource(R.string.action_close))
+                        }
+                    }
+                }
+            )
+        }
+        else -> Unit
+    }
+
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
@@ -321,4 +406,13 @@ private fun PhotoThumb(photo: TrackPhoto, onClick: () -> Unit) {
             Text("?")
         }
     }
+}
+private fun shareVideo(file: File, context: android.content.Context) {
+    val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "video/mp4"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, null))
 }
