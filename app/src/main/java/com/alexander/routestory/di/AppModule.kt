@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import com.alexander.routestory.data.RouteStoryDatabase
 import com.alexander.routestory.data.TrackDao
+import com.alexander.routestory.data.MIGRATION_1_2
+import com.alexander.routestory.data.TrackPhotoDao
 import com.alexander.routestory.data.TrackRepositoryImpl
 import com.alexander.routestory.domain.TrackRepository
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -22,10 +24,15 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): RouteStoryDatabase =
-        Room.databaseBuilder(context, RouteStoryDatabase::class.java, "routestory.db").build()
+        Room.databaseBuilder(context, RouteStoryDatabase::class.java, "routestory.db")
+            .addMigrations(MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideTrackDao(db: RouteStoryDatabase): TrackDao = db.trackDao()
+
+    @Provides
+    fun provideTrackPhotoDao(db: RouteStoryDatabase): TrackPhotoDao = db.trackPhotoDao()
 
     @Provides
     @Singleton

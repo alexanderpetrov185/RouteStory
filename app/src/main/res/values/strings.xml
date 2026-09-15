@@ -29,4 +29,10 @@
     <string name="stat_max_speed">Макс. скорость</string>
     <string name="stat_points">Точки</string>
     <string name="empty_history">Нет сохранённых маршрутов</string>
+    <string name="action_add_photo">Добавить фото</string>
+    <string name="photos_title">Фото</string>
+    <string name="action_delete_photo">Удалить фото</string>
+    <string name="action_shift_time">Сдвинуть время</string>
+    <string name="shift_minutes_label">Минут</string>
+    <string name="action_apply">Применить</string>
 </resources>

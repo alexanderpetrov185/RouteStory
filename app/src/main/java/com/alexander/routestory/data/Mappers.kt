@@ -1,6 +1,7 @@
 package com.alexander.routestory.data
 
 import com.alexander.routestory.domain.Track
+import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.domain.TrackPoint
 
 fun TrackEntity.toDomain(): Track = Track(
@@ -21,4 +22,14 @@ fun TrackPointEntity.toDomain(): TrackPoint = TrackPoint(
 fun TrackPoint.toEntity(trackId: Long): TrackPointEntity = TrackPointEntity(
     trackId = trackId, lat = lat, lon = lon, altitude = altitude,
     speed = speed, accuracy = accuracy, timestamp = timestamp
+)
+
+fun TrackPhotoEntity.toDomain(): TrackPhoto = TrackPhoto(
+    id = id, trackId = trackId, uri = uri, timestamp = timestamp,
+    latitude = latitude, longitude = longitude
+)
+
+fun TrackPhoto.toEntity(trackId: Long): TrackPhotoEntity = TrackPhotoEntity(
+    id = id, trackId = trackId, uri = uri, timestamp = timestamp,
+    latitude = latitude, longitude = longitude
 )

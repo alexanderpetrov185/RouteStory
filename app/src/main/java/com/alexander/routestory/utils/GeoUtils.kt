@@ -38,4 +38,20 @@ object GeoUtils {
 
     fun formatDate(ms: Long): String =
         SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault()).format(Date(ms))
+    /** Linearly interpolates a lat/lon position on the route by timestamp. */
+    fun interpolateByTime(points: List<TrackPoint>, timestamp: Long): Pair<Double, Double>? {
+        if (points.isEmpty()) return null
+        if (timestamp <= points.first().timestamp) return points.first().let { it.lat to it.lon }
+        if (timestamp >= points.last().timestamp) return points.last().let { it.lat to it.lon }
+        for (i in 1 until points.size) {
+            val a = points[i - 1]
+            val b = points[i]
+            if (timestamp <= b.timestamp) {
+                val span = (b.timestamp - a.timestamp).toFloat()
+                val t = if (span > 0f) (timestamp - a.timestamp) / span else 0f
+                return Pair(a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t)
+            }
+        }
+        return null
+    }
 }

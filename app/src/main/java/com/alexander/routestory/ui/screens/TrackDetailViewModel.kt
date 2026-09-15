@@ -6,6 +6,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.alexander.routestory.domain.Track
+import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.domain.TrackRepository
 import com.alexander.routestory.utils.GpxExporter
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -42,6 +43,28 @@ class TrackDetailViewModel @Inject constructor(
 
     fun deleteTrack() {
         viewModelScope.launch { repository.deleteTrack(trackId) }
+    }
+
+    fun addPhotos(uris: List<Uri>) {
+        val current = _track.value ?: return
+        viewModelScope.launch {
+            uris.forEach { repository.addPhoto(current, it) }
+            _track.value = repository.getTrack(trackId)
+        }
+    }
+
+    fun deletePhoto(photo: TrackPhoto) {
+        viewModelScope.launch {
+            repository.deletePhoto(photo)
+            _track.value = repository.getTrack(trackId)
+        }
+    }
+
+    fun shiftPhotoTime(photo: TrackPhoto, deltaMinutes: Long) {
+        viewModelScope.launch {
+            repository.updatePhotoTimestamp(photo, photo.timestamp + deltaMinutes * 60000)
+            _track.value = repository.getTrack(trackId)
+        }
     }
 
     fun exportGpx(uri: Uri) {
