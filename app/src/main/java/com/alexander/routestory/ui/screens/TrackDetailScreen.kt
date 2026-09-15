@@ -137,11 +137,7 @@ fun TrackDetailScreen(
             }
         } else {
             val photoPositions = remember(current.photos, current.points) {
-                current.photos.map { photo ->
-                    photo.latitude?.let { lat ->
-                        photo.longitude?.let { lon -> lat to lon }
-                    } ?: GeoUtils.interpolateByTime(current.points, photo.timestamp)
-                }.filterNotNull()
+                photoPositionsOf(current.points, current.photos)
             }
             Column(
                 modifier = Modifier

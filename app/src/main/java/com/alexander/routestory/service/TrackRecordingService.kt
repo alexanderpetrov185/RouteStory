@@ -161,6 +161,9 @@ class TrackRecordingService : LifecycleService() {
     }
 
     private fun handleLocation(location: Location) {
+        // The live "me" dot must move on every fix, even when the point is too noisy
+        // or too close to be stored in the recorded track.
+        stateHolder.update { it.copy(lastFix = location.latitude to location.longitude) }
         val candidate = TrackPoint(
             lat = location.latitude,
             lon = location.longitude,

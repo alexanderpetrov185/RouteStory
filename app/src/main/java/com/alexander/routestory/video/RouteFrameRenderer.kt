@@ -16,6 +16,7 @@ import kotlin.math.min
 class RouteFrameRenderer(private val limits: VideoLimits) {
 
     private val bgPaint = Paint().apply { color = Color.rgb(22, 28, 38) }
+    private val dimPaint = Paint().apply { color = Color.argb(90, 10, 14, 20) }
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.rgb(60, 90, 120)
         style = Paint.Style.STROKE
@@ -32,6 +33,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         style = Paint.Style.STROKE
         strokeWidth = 3f
     }
+    private val photoDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 193, 7) }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = 44f
@@ -51,10 +53,17 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         override fun sizeOf(key: String, value: Bitmap): Int = 1
     }
 
-    fun render(track: Track, frame: Int, frameCount: Int, canvas: Canvas) {
+    fun render(track: Track, frame: Int, frameCount: Int, canvas: Canvas, background: Bitmap? = null) {
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
-        canvas.drawRect(0f, 0f, w, h, bgPaint)
+        if (background != null) {
+            val src = android.graphics.Rect(0, 0, background.width, background.height)
+            val dst = android.graphics.RectF(0f, 0f, w, h)
+            canvas.drawBitmap(background, src, dst, null)
+            canvas.drawRect(0f, 0f, w, h, dimPaint)
+        } else {
+            canvas.drawRect(0f, 0f, w, h, bgPaint)
+        }
         if (track.points.size < 2) {
             drawTexts(track, canvas, w, h)
             return
@@ -98,6 +107,20 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             if (!started) { trail.moveTo(x, y); started = true } else trail.lineTo(x, y)
         }
         if (started) canvas.drawPath(trail, trailPaint)
+
+        // Photo markers sitting on the route at their time positions.
+        val markerPhotos = track.photos.sortedBy { it.timestamp }
+        for (photo in markerPhotos) {
+            val pos = photo.latitude?.let { lat ->
+                photo.longitude?.let { lon -> lat to lon }
+            } ?: GeoUtils.interpolateByTime(track.points, photo.timestamp)
+            if (pos != null) {
+                val (mx, my) = project(pos.first, pos.second)
+                canvas.drawCircle(mx, my, 10f, dotRingPaint)
+                canvas.drawCircle(mx, my, 10f, photoDotPaint)
+                canvas.drawCircle(mx, my, 4f, dotRingPaint)
+            }
+        }
 
         // Current position marker
         val current = GeoUtils.interpolateByTime(track.points, trackTime)

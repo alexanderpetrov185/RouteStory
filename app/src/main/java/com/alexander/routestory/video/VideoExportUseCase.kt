@@ -24,7 +24,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class VideoExportUseCase @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val snapshotProvider: MapSnapshotProvider
 ) {
 
     suspend fun export(track: Track, limits: VideoLimits, onProgress: (Float) -> Unit): File? = withContext(Dispatchers.Default) {
@@ -32,15 +33,23 @@ class VideoExportUseCase @Inject constructor(
         var muxer: MediaMuxer? = null
         var outFile: File? = null
         var success = false
+        var background: Bitmap? = null
         try {
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
             pruneOldVideos(dir)
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
             outFile = dest
+            // Static map backdrop (cached tiles, offline-friendly); null falls back to dark bg.
+            background = runCatching { snapshotProvider.snapshot(track, limits.width, limits.height) }.getOrNull()
+            onProgress(0.02f)
             val renderer = RouteFrameRenderer(limits)
             val frameCount = limits.durationSec * limits.fps
+            // One reusable frame bitmap: no per-frame allocations on weak devices.
             val bitmap = Bitmap.createBitmap(limits.width, limits.height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
+            // Y-plane scratch reused for every frame (biggest allocation in the loop).
+            val yRow = IntArray(limits.width)
+            val uvRow = IntArray(limits.width / 2)
 
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, limits.width, limits.height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
@@ -69,8 +78,8 @@ class VideoExportUseCase @Inject constructor(
                     if (inIndex >= 0) {
                         val image = codec.getInputImage(inIndex)
                         if (image != null) {
-                            renderer.render(track, frame, frameCount, canvas)
-                            copyBitmapToImage(bitmap, image)
+                            renderer.render(track, frame, frameCount, canvas, background)
+                            copyBitmapToImage(bitmap, image, yRow, uvRow)
                             val ptsUs = frame * 1_000_000L / limits.fps
                             val isLast = frame == frameCount - 1
                             val flags = if (isLast) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
@@ -123,42 +132,53 @@ class VideoExportUseCase @Inject constructor(
             try { encoder?.stop() } catch (_: Exception) {}
             try { encoder?.release() } catch (_: Exception) {}
             try { muxer?.release() } catch (_: Exception) {}
+            try { background?.recycle() } catch (_: Exception) {}
             if (!success) outFile?.delete()
         }
     }
 
-    private fun copyBitmapToImage(bitmap: Bitmap, image: Image) {
+    private fun copyBitmapToImage(bitmap: Bitmap, image: Image, yRow: IntArray, uvRow: IntArray) {
         val w = image.width
         val h = image.height
-        val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
-        fillPlane(yPlane.buffer, yPlane.pixelStride, yPlane.rowStride, pixels, w, h, 0)
-        fillPlane(uPlane.buffer, uPlane.pixelStride, uPlane.rowStride, pixels, w, h, 1)
-        fillPlane(vPlane.buffer, vPlane.pixelStride, vPlane.rowStride, pixels, w, h, 2)
-    }
-
-    /** component: 0 = Y, 1 = U, 2 = V (BT.601 limited range). */
-    private fun fillPlane(buffer: java.nio.ByteBuffer, pixelStride: Int, rowStride: Int, pixels: IntArray, w: Int, h: Int, component: Int) {
-        for (row in 0 until if (component == 0) h else h / 2) {
-            for (col in 0 until if (component == 0) w else w / 2) {
-                val px: Int = if (component == 0) {
-                    pixels[row * w + col]
-                } else {
-                    pixels[(row * 2) * w + (col * 2)]
-                }
+        val yBuf = yPlane.buffer
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+        val yPS = yPlane.pixelStride
+        val yRS = yPlane.rowStride
+        val uPS = uPlane.pixelStride
+        val uRS = uPlane.rowStride
+        val vPS = vPlane.pixelStride
+        val vRS = vPlane.rowStride
+        val halfW = w / 2
+        val halfH = h / 2
+        for (row in 0 until h) {
+            bitmap.getPixels(yRow, 0, w, 0, row, w, 1)
+            var pos = row * yRS
+            var i = 0
+            while (i < w) {
+                val px = yRow[i]
                 val r = (px shr 16) and 0xFF
                 val g = (px shr 8) and 0xFF
                 val b = px and 0xFF
-                val value: Int = when (component) {
-                    0 -> ((16829 * r + 33039 * g + 6416 * b) shr 16) + 16
-                    1 -> ((-9714 * r - 19071 * g + 28784 * b) shr 16) + 128
-                    else -> ((28784 * r - 24103 * g - 4681 * b) shr 16) + 128
+                yBuf.put(pos, (((16829 * r + 33039 * g + 6416 * b) shr 16) + 16).coerceIn(0, 255).toByte())
+                pos += yPS
+                i++
+            }
+            if (row % 2 == 0) {
+                val uvRowIndex = row / 2
+                var j = 0
+                while (j < halfW) {
+                    val px = yRow[j * 2]
+                    val r = (px shr 16) and 0xFF
+                    val g = (px shr 8) and 0xFF
+                    val b = px and 0xFF
+                    uBuf.put(uvRowIndex * uRS + j * uPS, (((-9714 * r - 19071 * g + 28784 * b) shr 16) + 128).coerceIn(0, 255).toByte())
+                    vBuf.put(uvRowIndex * vRS + j * vPS, (((28784 * r - 24103 * g - 4681 * b) shr 16) + 128).coerceIn(0, 255).toByte())
+                    j++
                 }
-                buffer.put(row * rowStride + col * pixelStride, value.coerceIn(0, 255).toByte())
             }
         }
     }

@@ -8,4 +8,6 @@ data class TrackPhoto(
     val timestamp: Long,
     val latitude: Double?,
     val longitude: Double?
+    // TODO(Pro): manualLat/manualLon + manual position picking on the map
+    // when EXIF/timestamp is broken.
 )

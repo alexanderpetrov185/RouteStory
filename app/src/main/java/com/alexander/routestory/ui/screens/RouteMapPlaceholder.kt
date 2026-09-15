@@ -58,6 +58,8 @@ private const val ROUTE_SOURCE = "routestory-route"
 private const val ROUTE_LAYER = "routestory-route-line"
 private const val PHOTO_SOURCE = "routestory-photos"
 private const val PHOTO_LAYER = "routestory-photos-layer"
+private const val ME_SOURCE = "routestory-me"
+private const val ME_LAYER = "routestory-me-dot"
 private const val ROUTE_WIDTH = 5f
 private const val MARKER_RADIUS = 6f
 private const val MARKER_STROKE = 2f
@@ -78,7 +80,8 @@ fun RouteMapPlaceholder(
     modifier: Modifier = Modifier,
     photoPositions: List<Pair<Double, Double>> = emptyList(),
     onPhotoTap: ((Int) -> Unit)? = null,
-    followLastPoint: Boolean = false
+    followLastPoint: Boolean = false,
+    currentPosition: Pair<Double, Double>? = null
 ) {
     val context = LocalContext.current
     // Decided once per screen visit: swapping renderers mid-flight would destroy a live
@@ -112,6 +115,7 @@ fun RouteMapPlaceholder(
         photoPositions = photoPositions,
         onPhotoTap = onPhotoTap,
         followLastPoint = followLastPoint,
+        currentPosition = currentPosition,
         online = online,
         onCreationFailed = { useCanvas = true },
         modifier = modifier
@@ -135,7 +139,9 @@ private class MapHolder {
     var map: MapLibreMap? = null
     var routeSource: GeoJsonSource? = null
     var photosSource: GeoJsonSource? = null
+    var meSource: GeoJsonSource? = null
     var photos: List<Pair<Double, Double>> = emptyList()
+    var me: Pair<Double, Double>? = null
     var onPhotoTap: ((Int) -> Unit)? = null
     var lastBoundsKey: String? = null
     var userPanned = false
@@ -210,9 +216,10 @@ private class MapHolder {
         mapView = null
         routeSource = null
         photosSource = null
+        meSource = null
     }
 
-    fun attachStyle(style: Style, lineColor: Int, markerColor: Int) {
+    fun attachStyle(style: Style, lineColor: Int, markerColor: Int, meColor: Int) {
         val empty = FeatureCollection.fromFeatures(emptyArray<Feature>())
         val route = GeoJsonSource(ROUTE_SOURCE, empty)
         val photos = GeoJsonSource(PHOTO_SOURCE, empty)
@@ -225,6 +232,14 @@ private class MapHolder {
             )
         )
         style.addLayer(
+            CircleLayer(ME_LAYER, ME_SOURCE).withProperties(
+                PropertyFactory.circleColor(meColor),
+                PropertyFactory.circleRadius(MARKER_RADIUS + 2f),
+                PropertyFactory.circleStrokeWidth(MARKER_STROKE + 1f),
+                PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE)
+            )
+        )
+        style.addLayer(
             CircleLayer(PHOTO_LAYER, PHOTO_SOURCE).withProperties(
                 PropertyFactory.circleColor(markerColor),
                 PropertyFactory.circleRadius(MARKER_RADIUS),
@@ -232,8 +247,23 @@ private class MapHolder {
                 PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE)
             )
         )
+        val me = GeoJsonSource(ME_SOURCE, empty)
+        style.addSource(me)
         routeSource = route
         photosSource = photos
+        meSource = me
+        updateMe()
+    }
+
+    fun updateMe() {
+        val source = meSource ?: return
+        val pos = me
+        runCatching {
+            source.setGeoJson(
+                if (pos == null) FeatureCollection.fromFeatures(emptyArray<Feature>())
+                else FeatureCollection.fromFeature(Feature.fromGeometry(Point.fromLngLat(pos.second, pos.first)))
+            )
+        }
     }
 
     fun updateRoute(points: List<TrackPoint>) {
@@ -276,7 +306,13 @@ private class MapHolder {
         return true
     }
 
-    fun updateCamera(map: MapLibreMap, points: List<TrackPoint>, followLastPoint: Boolean) {
+    fun updateCamera(map: MapLibreMap, points: List<TrackPoint>, followLastPoint: Boolean, currentPosition: Pair<Double, Double>? = null) {
+        val mePos = currentPosition ?: me
+        if (mePos != null && (followLastPoint || points.size < 2)) {
+            if (followLastPoint && userPanned) return
+            runCatching { map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(mePos.first, mePos.second), MapTiles.TRACKING_ZOOM)) }
+            if (points.size < 2) { lastBoundsKey = null; return }
+        }
         val last = points.lastOrNull() ?: return
         if (followLastPoint) {
             if (userPanned) return
@@ -316,6 +352,7 @@ private fun MapLibreRouteMap(
     photoPositions: List<Pair<Double, Double>>,
     onPhotoTap: ((Int) -> Unit)?,
     followLastPoint: Boolean,
+    currentPosition: Pair<Double, Double>?,
     online: Boolean,
     onCreationFailed: () -> Unit,
     modifier: Modifier = Modifier
@@ -325,8 +362,10 @@ private fun MapLibreRouteMap(
     val lifecycleOwner = LocalLifecycleOwner.current
     val lineColor = MaterialTheme.colorScheme.primary.toArgb()
     val markerColor = MaterialTheme.colorScheme.tertiary.toArgb()
+    val meColor = MaterialTheme.colorScheme.secondary.toArgb()
     val holder = remember { MapHolder() }
     holder.photos = photoPositions
+    holder.me = currentPosition
     holder.onPhotoTap = onPhotoTap
     var laidOut by remember { mutableStateOf(false) }
     var styleTimedOut by remember { mutableStateOf(false) }
@@ -369,6 +408,7 @@ private fun MapLibreRouteMap(
                 holder.map = null
                 holder.routeSource = null
                 holder.photosSource = null
+                holder.meSource = null
                 holder.lastBoundsKey = null
                 holder.userPanned = false
                 holder.styleReady = false
@@ -390,12 +430,13 @@ private fun MapLibreRouteMap(
                             object : Style.OnStyleLoaded {
                                 override fun onStyleLoaded(style: Style) {
                                     if (!holder.isAlive() || holder.map !== map) return
-                                    holder.attachStyle(style, lineColor, markerColor)
+                                    holder.attachStyle(style, lineColor, markerColor, meColor)
                                     holder.styleReady = true
                                     MapAvailability.markReady(appContext)
                                     holder.updateRoute(points)
                                     holder.updatePhotos()
-                                    holder.updateCamera(map, points, followLastPoint)
+                                    holder.updateMe()
+                                    holder.updateCamera(map, points, followLastPoint, holder.me)
                                 }
                             }
                         )
@@ -423,12 +464,20 @@ private fun MapLibreRouteMap(
         holder.updateRoute(points)
         val map = holder.map
         if (map != null && holder.styleReady && holder.isAlive()) {
-            holder.updateCamera(map, points, followLastPoint)
+            holder.updateCamera(map, points, followLastPoint, holder.me)
         }
     }
     LaunchedEffect(photoPositions) {
         holder.photos = photoPositions
         holder.updatePhotos()
+    }
+    LaunchedEffect(currentPosition) {
+        holder.me = currentPosition
+        holder.updateMe()
+        val map = holder.map
+        if (map != null && holder.styleReady && holder.isAlive() && currentPosition != null) {
+            holder.updateCamera(map, points, followLastPoint, currentPosition)
+        }
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -456,10 +505,12 @@ private fun RouteMapCanvas(
     points: List<TrackPoint>,
     photoPositions: List<Pair<Double, Double>>,
     onPhotoTap: ((Int) -> Unit)?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    currentPosition: Pair<Double, Double>? = null
 ) {
     val lineColor = MaterialTheme.colorScheme.primary
     val markerColor = MaterialTheme.colorScheme.tertiary
+    val meColor = MaterialTheme.colorScheme.secondary
     val hasRoute = points.size >= 2
 
     val minLat = if (hasRoute) points.minOf { it.lat } else 0.0

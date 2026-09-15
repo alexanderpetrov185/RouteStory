@@ -21,4 +21,6 @@ interface TrackRepository {
     suspend fun deletePhoto(photo: TrackPhoto)
 
     suspend fun updatePhotoTimestamp(photo: TrackPhoto, newTimestamp: Long)
+    // TODO(Pro): MergeTracksUseCase - merge two tracks into one (sort points by time,
+    // recalculate distance/duration, keep photos of both).
 }
