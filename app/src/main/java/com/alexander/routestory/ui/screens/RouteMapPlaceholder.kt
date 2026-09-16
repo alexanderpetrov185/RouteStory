@@ -3,6 +3,13 @@ package com.alexander.routestory.ui.screens
 import android.os.Build
 import android.util.Log
 import android.widget.FrameLayout
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -177,9 +184,21 @@ fun RouteMapPlaceholder(
         onLocate?.let {
             val gpsDisabledText = stringResource(R.string.gps_disabled)
             val myLocationText = stringResource(R.string.map_my_location)
+            var flashing by remember { mutableStateOf(false) }
+            val fabColor by animateColorAsState(
+                targetValue = if (flashing) Color.White else MaterialTheme.colorScheme.surfaceContainerHigh,
+                animationSpec = tween(durationMillis = 150),
+                label = "locate-fab-color"
+            )
             FloatingActionButton(
                 onClick = {
                     it()
+                    // Explicit 0.5 s white flash so the tap is unmistakable.
+                    flashing = true
+                    scope.launch {
+                        delay(500)
+                        flashing = false
+                    }
                     // No fix yet -> tell the user instead of silently doing nothing.
                     if (currentPosition == null) {
                         scope.launch {
@@ -193,8 +212,8 @@ fun RouteMapPlaceholder(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(16.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                contentColor = MaterialTheme.colorScheme.onSurface,
+                containerColor = fabColor,
+                contentColor = if (flashing) Color.Black else MaterialTheme.colorScheme.onSurface,
                 elevation = FloatingActionButtonDefaults.elevation(
                     defaultElevation = 6.dp,
                     pressedElevation = 12.dp,
@@ -204,7 +223,7 @@ fun RouteMapPlaceholder(
                 Icon(
                     imageVector = Icons.Filled.MyLocation,
                     contentDescription = myLocationText,
-                    tint = MaterialTheme.colorScheme.onSurface
+                    tint = if (flashing) Color.Black else MaterialTheme.colorScheme.onSurface
                 )
             }
         }
@@ -652,10 +671,20 @@ private fun RouteMapCanvas(
     locateTick: Int = 0
 ) {
     val context = LocalContext.current
-    val lineColor = MaterialTheme.colorScheme.primary
     val markerColor = MaterialTheme.colorScheme.tertiary
-    val meColor = MaterialTheme.colorScheme.secondary
     val hasRoute = points.size >= 2
+
+    // Gentle pulse for the "me" marker (0 -> 1 -> 0).
+    val pulseTransition = rememberInfiniteTransition(label = "me-pulse")
+    val pulsePhase by pulseTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1_200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "me-pulse-phase"
+    )
 
     // Geo window to cover: the route, or just the current fix when nothing is recorded yet.
     // While recording (followLastPoint) the mosaic follows the live fix instead of the
@@ -770,23 +799,29 @@ private fun RouteMapCanvas(
                 val offset = project(point.lat, point.lon, size.width, size.height)
                 if (index == 0) path.moveTo(offset.x, offset.y) else path.lineTo(offset.x, offset.y)
             }
-            drawPath(path, color = lineColor, style = Stroke(width = 6f))
+            // White underlay + bright blue line: readable on any tile imagery.
+            drawPath(path, color = Color(0xCCFFFFFF), style = Stroke(width = 13f))
+            drawPath(path, color = Color(0xFF2196F3), style = Stroke(width = 7f))
         }
         photoPositions.forEach { position ->
             val offset = project(position.first, position.second, size.width, size.height)
             drawCircle(markerColor, radius = 14f, center = offset)
             drawCircle(androidx.compose.ui.graphics.Color.White, radius = 5f, center = offset)
         }
-        // Live GPS fix: visible even when no route points exist yet (single point case).
+        // Live GPS fix: bright blue, larger, with a white ring and a subtle pulse so it
+        // reads as "current position" on any backdrop.
         if (currentPosition != null) {
             val pos = currentPosition
-            val center = if (hasRoute) {
+            val meCenter = if (hasRoute) {
                 project(pos.first, pos.second, size.width, size.height)
             } else {
                 Offset(size.width / 2f, size.height / 2f)
             }
-            drawCircle(meColor, radius = 12f, center = center)
-            drawCircle(androidx.compose.ui.graphics.Color.White, radius = 4f, center = center)
+            val pulse = 1f + 0.18f * pulsePhase
+            drawCircle(Color(0x332196F3), radius = 30f * pulse, center = meCenter)
+            drawCircle(Color(0xFF0D47A1), radius = 18f, center = meCenter)
+            drawCircle(Color(0xFF2196F3), radius = 15f, center = meCenter)
+            drawCircle(androidx.compose.ui.graphics.Color.White, radius = 15f, center = meCenter, style = Stroke(width = 4f))
         }
     }
 }

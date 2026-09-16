@@ -22,21 +22,26 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private val bgPaint = Paint().apply { color = Color.rgb(22, 28, 38) }
     private val dimPaint = Paint().apply { color = Color.argb(90, 10, 14, 20) }
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        // Bright colours chosen for contrast on satellite imagery (Sprint 14).
+        // Thick light underlay for the whole route: readable on satellite imagery.
         color = Color.rgb(245, 245, 245)
         style = Paint.Style.STROKE
-        strokeWidth = 7f
+        strokeWidth = 9f
         strokeCap = Paint.Cap.ROUND
     }
     private val trailPaint = Paint(routePaint).apply {
-        color = Color.rgb(255, 193, 7)
-        strokeWidth = 10f
+        // Bright accent drawn over the underlay for the travelled part.
+        color = Color.rgb(255, 160, 0)
+        strokeWidth = 13f
+    }
+    private val dotHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        // Dark halo keeps the marker readable on light and dark imagery.
+        color = Color.argb(150, 0, 0, 0)
     }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 87, 34) }
     private val dotRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
-        strokeWidth = 3f
+        strokeWidth = 4f
     }
     private val photoDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 193, 7) }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -146,7 +151,17 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         } else {
             canvas.drawRect(0f, 0f, w, h, bgPaint)
         }
+        if (track.points.isEmpty()) {
+            drawTexts(track, canvas, w, h)
+            return
+        }
         if (track.points.size < 2) {
+            // Degenerate track: still show the single fix instead of an empty frame.
+            val centerX = w / 2f
+            val centerY = h / 2f
+            canvas.drawCircle(centerX, centerY, 22f, dotHaloPaint)
+            canvas.drawCircle(centerX, centerY, 15f, dotPaint)
+            canvas.drawCircle(centerX, centerY, 15f, dotRingPaint)
             drawTexts(track, canvas, w, h)
             return
         }
@@ -177,10 +192,10 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             return x to y
         }
 
-        val progress = (frame + 1f) / frameCount
+        val progress = ((frame + 1f) / frameCount).coerceIn(0f, 1f)
         val trackTime = track.startTime + ((track.endTime - track.startTime) * progress).toLong()
 
-        // Full route, dimmed
+        // Full route underlay (always drawn, even for a two-point track).
         val fullPath = android.graphics.Path()
         track.points.forEachIndexed { index, point ->
             val (x, y) = project(point.lat, point.lon)
@@ -188,15 +203,37 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         }
         canvas.drawPath(fullPath, routePaint)
 
-        // Trail up to the current time
+        // Progress runs over the POINT INDEX, not wall-time: a short track still
+        // animates the marker along its whole length within the clip duration.
+        val n = track.points.size
+        val pos = progress * (n - 1)
+        val index = floor(pos).toInt().coerceIn(0, (n - 2).coerceAtLeast(0))
+        val frac = (pos - index).coerceIn(0f, 1f)
+        val next = track.points.getOrElse(index + 1) { track.points[index] }
+        val cur = track.points[index]
+        val curLat = cur.lat + (next.lat - cur.lat) * frac
+        val curLon = cur.lon + (next.lon - cur.lon) * frac
+
+        // Bright trail: the last ~15% of the travelled distance only.
+        val tailSpan = max(1f, (n - 1) * 0.15f)
+        val tailFrom = (pos - tailSpan).coerceAtLeast(0f)
+        val tailIndex = floor(tailFrom).toInt().coerceIn(0, index)
+        val tailFrac = (tailFrom - tailIndex).coerceIn(0f, 1f)
+        val tailBase = track.points[tailIndex]
+        val tailNext = track.points.getOrElse(tailIndex + 1) { tailBase }
         val trail = android.graphics.Path()
-        var started = false
-        for (point in track.points) {
-            if (point.timestamp > trackTime) break
-            val (x, y) = project(point.lat, point.lon)
-            if (!started) { trail.moveTo(x, y); started = true } else trail.lineTo(x, y)
+        val (tx, ty) = project(
+            tailBase.lat + (tailNext.lat - tailBase.lat) * tailFrac,
+            tailBase.lon + (tailNext.lon - tailBase.lon) * tailFrac
+        )
+        trail.moveTo(tx, ty)
+        for (k in tailIndex + 1..index) {
+            val (px, py) = project(track.points[k].lat, track.points[k].lon)
+            trail.lineTo(px, py)
         }
-        if (started) canvas.drawPath(trail, trailPaint)
+        val (cx0, cy0) = project(curLat, curLon)
+        trail.lineTo(cx0, cy0)
+        canvas.drawPath(trail, trailPaint)
 
         // Photo markers sitting on the route at their time positions.
         val markerPhotos = track.photos.sortedBy { it.timestamp }
@@ -212,13 +249,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             }
         }
 
-        // Current position marker
-        val current = GeoUtils.interpolateByTime(track.points, trackTime)
-        if (current != null) {
-            val (cx, cy) = project(current.first, current.second)
-            canvas.drawCircle(cx, cy, 14f, dotPaint)
-            canvas.drawCircle(cx, cy, 14f, dotRingPaint)
-        }
+        // Current position marker is drawn LAST (after photo overlays) so it is always
+        // on top of the route, markers and photos.
 
         // Photo overlays with fade in/out (about 0.6 s at the video timeline)
         val fadeFrames = (limits.fps * 0.6f).toInt().coerceAtLeast(1)
@@ -238,6 +270,14 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
                 val drawW = bitmap.width * scale
                 canvas.drawBitmap(bitmap, (w - drawW) / 2f, (h - targetH) / 2f, photoPaint)
             }
+        }
+
+        // Moving "me" marker: dark halo + bright centre + white ring, always on top.
+        run {
+            val (mx, my) = project(curLat, curLon)
+            canvas.drawCircle(mx, my, 22f, dotHaloPaint)
+            canvas.drawCircle(mx, my, 15f, dotPaint)
+            canvas.drawCircle(mx, my, 15f, dotRingPaint)
         }
 
         drawTexts(track, canvas, w, h)
