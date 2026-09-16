@@ -32,6 +32,10 @@ class VideoExportStateHolder @Inject constructor() {
     var job: Job? = null
 
     fun setRunning(progress: Float) {
+        // Never let the progress jump backwards (e.g. the snapshot phase reporting a
+        // small value after an earlier frame already showed a higher one).
+        val prev = (_state.value as? VideoExportState.Running)?.progress ?: -1f
+        if (progress <= prev) return
         _state.value = VideoExportState.Running(progress)
     }
 
@@ -45,5 +49,15 @@ class VideoExportStateHolder @Inject constructor() {
 
     fun reset() {
         _state.value = VideoExportState.Idle
+    }
+
+    /**
+     * Cancels the running export job and returns the UI to Idle immediately.
+     * A repeated start cannot attach to a stale job because the reference is dropped.
+     */
+    fun cancel() {
+        job?.cancel()
+        job = null
+        reset()
     }
 }

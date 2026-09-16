@@ -14,6 +14,14 @@ object MapTiles {
     const val TRACKING_ZOOM = 16.0
 
     /**
+     * Sprint 12 (MVP decision): MapLibre on the test device stayed blank despite a
+     * healthy network (probe HTTP 200), so the live map is always rendered through the
+     * proven OSM-tile Canvas path (OsmTileLayer). MapLibre remains in the code but is
+     * not selected while this flag is on.
+     */
+    const val FORCE_OSM_CANVAS = true
+
+    /**
      * Identifying User-Agent required by the OSM Tile Usage Policy for every tile request
      * (live map via MapLibre, availability probe and video snapshot alike).
      */

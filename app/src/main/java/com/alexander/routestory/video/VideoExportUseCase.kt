@@ -8,6 +8,7 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Log
 import com.alexander.routestory.domain.Track
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -37,13 +38,13 @@ class VideoExportUseCase @Inject constructor(
         try {
             // Nothing meaningful to animate; do not create a codec or an empty file.
             if (track.points.size < 2) return@withContext null
+            Log.i("MapSnapshot", "export start points=${track.points.size}")
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
             pruneOldVideos(dir)
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
             outFile = dest
             // Static map backdrop (cached tiles, offline-friendly); null falls back to dark bg.
             background = runCatching { snapshotProvider.snapshot(track, limits.width, limits.height) }.getOrNull()
-            onProgress(0.02f)
             val renderer = RouteFrameRenderer(limits)
             val frameCount = limits.durationSec * limits.fps
             // One reusable frame bitmap: no per-frame allocations on weak devices.
@@ -157,7 +158,9 @@ class VideoExportUseCase @Inject constructor(
             success = true
             dest
         } catch (e: kotlinx.coroutines.CancellationException) {
-            null
+            // Must propagate: swallowing it would keep the cancelled job alive and let
+            // "Cancel" look ignored.
+            throw e
         } catch (e: Exception) {
             null
         } finally {

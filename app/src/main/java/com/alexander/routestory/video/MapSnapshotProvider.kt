@@ -43,7 +43,7 @@ class MapSnapshotProvider @Inject constructor(
         // Same raster source as the live map style (assets/route_map_style.json):
         // OSM raster tiles only, free, no API key.
         private const val TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
-        const val MAX_TILES = 24
+        const val MAX_TILES = 16
         const val TILE_PX = 256
         const val MAX_ZOOM = 14
 
@@ -202,8 +202,8 @@ class MapSnapshotProvider @Inject constructor(
         val url = URL(String.format(TILE_URL, z, x, y))
         val connection = url.openConnection() as HttpURLConnection
         try {
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 8_000
+            connection.connectTimeout = 5_000
+            connection.readTimeout = 5_000
             connection.setRequestProperty("User-Agent", MapTiles.USER_AGENT)
             connection.connect()
             val code = connection.responseCode

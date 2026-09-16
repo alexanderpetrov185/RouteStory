@@ -96,10 +96,14 @@ fun RouteMapPlaceholder(
     currentPosition: Pair<Double, Double>? = null
 ) {
     val context = LocalContext.current
+    // Sprint 12: MapLibre stays blank on the target device even with a healthy network,
+    // so FORCE_OSM_CANVAS routes every screen through the OsmTileLayer Canvas path.
     // Decided once per screen visit: swapping renderers mid-flight would destroy a live
     // MapView while its renderer is still drawing.
-    val mapAllowed = remember { MapAvailability.canUseMap(context.applicationContext) }
-    var useCanvas by remember { mutableStateOf(!mapAllowed) }
+    val mapAllowed = remember {
+        MapAvailability.canUseMap(context.applicationContext) && !MapTiles.FORCE_OSM_CANVAS
+    }
+    var useCanvas by remember { mutableStateOf(true) }
     var online by remember { mutableStateOf(true) }
     var styleOk by remember { mutableStateOf<Boolean?>(null) }
     val onStyleResult = remember { { ok: Boolean, reason: String? ->
@@ -107,7 +111,11 @@ fun RouteMapPlaceholder(
         styleOk = ok
     } }
 
-    Log.i("RouteMap", "map path: canUseMap=$mapAllowed canvas=$useCanvas")
+    // Logged once per screen visit, not on every recomposition (points arrive every 500 ms
+    // while recording and would spam logcat otherwise).
+    LaunchedEffect(Unit) {
+        Log.i("RouteMap", "map path: canUseMap=$mapAllowed canvas=true (forced)")
+    }
 
     // ConnectivityManager alone is not enough: the emulator can report the radio as
     // connected while tile.openstreetmap.org is actually unreachable. The real check is a
@@ -124,10 +132,11 @@ fun RouteMapPlaceholder(
                 photoPositions = photoPositions,
                 onPhotoTap = onPhotoTap,
                 modifier = Modifier.fillMaxSize(),
-                currentPosition = currentPosition
+                currentPosition = currentPosition,
+                followLastPoint = followLastPoint
             )
             when {
-                !mapAllowed -> MapNotice(
+                !mapAllowed && !MapTiles.FORCE_OSM_CANVAS -> MapNotice(
                     text = stringResource(R.string.map_unavailable),
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
@@ -587,7 +596,8 @@ private fun RouteMapCanvas(
     photoPositions: List<Pair<Double, Double>>,
     onPhotoTap: ((Int) -> Unit)?,
     modifier: Modifier = Modifier,
-    currentPosition: Pair<Double, Double>? = null
+    currentPosition: Pair<Double, Double>? = null,
+    followLastPoint: Boolean = false
 ) {
     val context = LocalContext.current
     val lineColor = MaterialTheme.colorScheme.primary
@@ -596,14 +606,17 @@ private fun RouteMapCanvas(
     val hasRoute = points.size >= 2
 
     // Geo window to cover: the route, or just the current fix when nothing is recorded yet.
+    // While recording (followLastPoint) the mosaic follows the live fix instead of the
+    // whole route, like the MapLibre follow mode did.
     val minLat = if (hasRoute) points.minOf { it.lat } else currentPosition?.first ?: 0.0
     val maxLat = if (hasRoute) points.maxOf { it.lat } else currentPosition?.first ?: 0.0
     val minLon = if (hasRoute) points.minOf { it.lon } else currentPosition?.second ?: 0.0
     val maxLon = if (hasRoute) points.maxOf { it.lon } else currentPosition?.second ?: 0.0
-    val centerLat = (minLat + maxLat) / 2.0
-    val centerLon = (minLon + maxLon) / 2.0
-    val latSpan = max(maxLat - minLat, 0.002)
-    val lonSpan = max(maxLon - minLon, 0.002)
+    val followFix: Pair<Double, Double>? = if (followLastPoint) currentPosition else null
+    val centerLat = followFix?.first ?: ((minLat + maxLat) / 2.0)
+    val centerLon = followFix?.second ?: ((minLon + maxLon) / 2.0)
+    val latSpan = if (followFix != null) 0.004 else max(maxLat - minLat, 0.002)
+    val lonSpan = if (followFix != null) 0.004 else max(maxLon - minLon, 0.002)
 
     // OSM tile mosaic behind the route (real map imagery without MapLibre).
     // Re-queried only when the covered window grows meaningfully (>= 40% of tile span).

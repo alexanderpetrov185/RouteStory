@@ -13,21 +13,16 @@ import com.alexander.routestory.service.VideoExportState
 import com.alexander.routestory.video.VideoLimits
 import com.alexander.routestory.service.VideoExportStateHolder
 import com.alexander.routestory.video.VideoExportUseCase
-import com.alexander.routestory.utils.GpxExporter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
@@ -44,9 +39,6 @@ class TrackDetailViewModel @Inject constructor(
 
     private val _track = MutableStateFlow<Track?>(null)
     val track: StateFlow<Track?> = _track.asStateFlow()
-
-    private val _exportResult = MutableSharedFlow<Boolean>(extraBufferCapacity = 1)
-    val exportResult: SharedFlow<Boolean> = _exportResult.asSharedFlow()
 
     val videoState: StateFlow<VideoExportState> = videoStateHolder.state
 
@@ -83,21 +75,6 @@ class TrackDetailViewModel @Inject constructor(
         }
     }
 
-    fun exportGpx(uri: Uri) {
-        val current = _track.value ?: return
-        viewModelScope.launch {
-            val result = runCatching {
-                val gpx = GpxExporter.buildGpx(current)
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)?.use { stream ->
-                        stream.write(gpx.toByteArray(Charsets.UTF_8))
-                    } ?: error("Cannot open output stream")
-                }
-            }
-            _exportResult.tryEmit(result.isSuccess)
-        }
-    }
-
     fun createVideo(track: Track) {
         if (videoStateHolder.state.value is VideoExportState.Running) return
         viewModelScope.launch {
@@ -114,8 +91,7 @@ class TrackDetailViewModel @Inject constructor(
     }
 
     fun cancelVideo() {
-        videoStateHolder.job?.cancel()
-        videoStateHolder.reset()
+        videoStateHolder.cancel()
     }
 
     fun consumeVideoResult() {
