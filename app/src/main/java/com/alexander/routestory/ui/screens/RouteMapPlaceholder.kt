@@ -94,7 +94,9 @@ fun RouteMapPlaceholder(
     photoPositions: List<Pair<Double, Double>> = emptyList(),
     onPhotoTap: ((Int) -> Unit)? = null,
     followLastPoint: Boolean = false,
-    currentPosition: Pair<Double, Double>? = null
+    currentPosition: Pair<Double, Double>? = null,
+    locateTick: Int = 0,
+    onLocate: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     // Sprint 12: MapLibre stays blank on the target device even with a healthy network,
@@ -134,7 +136,8 @@ fun RouteMapPlaceholder(
                 onPhotoTap = onPhotoTap,
                 modifier = Modifier.fillMaxSize(),
                 currentPosition = currentPosition,
-                followLastPoint = followLastPoint
+                followLastPoint = followLastPoint,
+                locateTick = locateTick
             )
             when {
                 !mapAllowed && !MapTiles.FORCE_OSM_CANVAS -> MapNotice(
@@ -158,6 +161,18 @@ fun RouteMapPlaceholder(
                 onStyleResult = onStyleResult,
                 modifier = Modifier.fillMaxSize()
             )
+        }
+        onLocate?.let {
+            androidx.compose.material3.IconButton(
+                onClick = it,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .background(Color(0xCC1C2330), shape = androidx.compose.foundation.shape.CircleShape)
+            ) {
+                // Core icon set has no "my location"; a simple crosshair glyph is enough.
+                Text("◎", color = Color.White, style = MaterialTheme.typography.titleLarge)
+            }
         }
         if (BuildConfig.DEBUG) {
             val fixText = currentPosition?.let { "%.5f,%.5f".format(it.first, it.second) } ?: "-"
@@ -598,7 +613,8 @@ private fun RouteMapCanvas(
     onPhotoTap: ((Int) -> Unit)?,
     modifier: Modifier = Modifier,
     currentPosition: Pair<Double, Double>? = null,
-    followLastPoint: Boolean = false
+    followLastPoint: Boolean = false,
+    locateTick: Int = 0
 ) {
     val context = LocalContext.current
     val lineColor = MaterialTheme.colorScheme.primary
@@ -625,19 +641,22 @@ private fun RouteMapCanvas(
     // the window meaningfully changed (center moved ~1 km or the span grew), and the
     // previous mosaic stays on screen while the next one is downloading.
     var mosaic by remember { mutableStateOf<OsmTileLayer.Mosaic?>(null) }
-    val window = rememberUpdatedState(listOf(centerLat, centerLon, lonSpan, latSpan))
+    val window = rememberUpdatedState(
+        listOf(centerLat, centerLon, lonSpan, latSpan) to locateTick
+    )
     LaunchedEffect(Unit) {
         var lastKey = ""
         while (true) {
-            val params = window.value
-            val key = "%.2f,%.2f|%.3f".format(params[0], params[1], max(params[2], params[3]))
+            val (geo, tick) = window.value
+            // locateTick forces an immediate re-centre on the latest fix (locate button).
+            val key = "%.2f,%.2f|%.3f|tick=%d".format(geo[0], geo[1], max(geo[2], geo[3]), tick)
             if (key != lastKey) {
                 val next = OsmTileLayer.mosaic(
                     context = context.applicationContext,
-                    centerLat = params[0],
-                    centerLon = params[1],
-                    lonSpanDeg = params[2],
-                    latSpanDeg = params[3],
+                    centerLat = geo[0],
+                    centerLon = geo[1],
+                    lonSpanDeg = geo[2],
+                    latSpanDeg = geo[3],
                     tiles = 2 // 2x2 = 4 tiles: fastest useful coverage
                 )
                 if (next != null) {

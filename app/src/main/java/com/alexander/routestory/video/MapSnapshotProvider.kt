@@ -41,9 +41,10 @@ class MapSnapshotProvider @Inject constructor(
 ) {
     companion object {
         // Video backdrop = Esri World Imagery satellite (free, no API key, attribution
-        // required). NOTE the URL order: MapServer tile path is z / y / x (not z/x/y)!
+        // required). Canonical MapServer path has NO file extension and the order is
+        // z / y / x (not z/x/y)!
         private const val TILE_URL =
-            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d.png"
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d"
         const val MAX_TILES = 9
         const val TILE_PX = 256
         const val MAX_ZOOM = 14
@@ -213,10 +214,19 @@ class MapSnapshotProvider @Inject constructor(
             connection.setRequestProperty("User-Agent", MapTiles.USER_AGENT)
             connection.connect()
             val code = connection.responseCode
+            val contentType = connection.contentType ?: ""
             // Tile grid only (z/x/y), never track coordinates.
-            Log.i("MapSnapshot", "tile z=$z HTTP $code")
-            if (code != HttpURLConnection.HTTP_OK) return null
-            connection.inputStream.use { BitmapFactory.decodeStream(it) }
+            if (code != HttpURLConnection.HTTP_OK || !contentType.startsWith("image/")) {
+                Log.i("MapSnapshot", "tile z=$z HTTP $code ct=$contentType -> skipped (not an image)")
+                return null
+            }
+            val bytes = connection.inputStream.use { it.readBytes() }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            Log.i(
+                "MapSnapshot",
+                "tile z=$z HTTP $code ct=$contentType bytes=${bytes.size} decode=${bitmap != null}"
+            )
+            bitmap
         } finally {
             connection.disconnect()
         }

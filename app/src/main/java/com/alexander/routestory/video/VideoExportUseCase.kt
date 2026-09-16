@@ -76,21 +76,15 @@ class VideoExportUseCase @Inject constructor(
             }
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             encoder = codec
-            // Prefer the explicit semi-planar (NV12) byte-buffer input: feeding a hand-rolled
-            // NV12 buffer avoids device-specific Image plane layouts (the source of the
-            // green/grey mush). Fall back to the Flexible + getInputImage path only when
-            // the encoder rejects the explicit format.
-            var useImageInput = false
-            runCatching {
-                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            }.getOrElse {
-                useImageInput = true
-                format.setInteger(
-                    MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
-                )
-                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            }
+            // Colour correctness (Sprint 15): prefer the codec-provided Image planes —
+            // the encoder itself declares the plane layout, which avoids the dark-green
+            // cast of hand-rolled NV12 on encoders that expect padded/planar input.
+            // The NV12 byte-buffer path stays as fallback when getInputImage returns null.
+            format.setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+            )
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             codec.start()
             val mux = MediaMuxer(dest.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             muxer = mux
@@ -107,21 +101,21 @@ class VideoExportUseCase @Inject constructor(
                 if (frame < frameCount && !eosSent) {
                     val inIndex = codec.dequeueInputBuffer(10_000L)
                     if (inIndex >= 0) {
-                        val queued = if (useImageInput) {
+                        val queued = run {
                             val image = codec.getInputImage(inIndex)
                             if (image != null) {
                                 renderer.render(track, frame, frameCount, canvas, background)
                                 copyBitmapToImage(bitmap, image, yRow, uvRow)
                                 true
-                            } else false
-                        } else {
-                            val inBuf = codec.getInputBuffer(inIndex)
-                            if (inBuf != null) {
-                                renderer.render(track, frame, frameCount, canvas, background)
-                                inBuf.clear()
-                                copyBitmapToNv12(bitmap, inBuf, yRow)
-                                true
-                            } else false
+                            } else {
+                                val inBuf = codec.getInputBuffer(inIndex)
+                                if (inBuf != null) {
+                                    renderer.render(track, frame, frameCount, canvas, background)
+                                    inBuf.clear()
+                                    copyBitmapToNv12(bitmap, inBuf, yRow)
+                                    true
+                                } else false
+                            }
                         }
                         if (queued) {
                             val ptsUs = frame * 1_000_000L / limits.fps

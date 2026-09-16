@@ -17,9 +17,10 @@ object MapTiles {
     /** OSM raster tiles — the guaranteed free fallback for the live map. */
     const val OSM_TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
 
-    /** CARTO dark raster: muted dark style, better fit for a tracking screen than
-     *  the colourful OSM default. Requires no key on some deployments — probed at
-     *  runtime, and OSM is used whenever the probe does not return an image. */
+    /** CARTO dark raster: muted dark style, but key-gated on most deployments —
+     *  without a valid key it serves an "API KEY REQUIRED" placeholder image, so it is
+     *  only used when CARTO_API_KEY is set in local.properties AND a probe tile returns
+     *  a real image. */
     private const val DARK_TILE_URL = "https://basemaps.cartocdn.com/dark_all/%d/%d/%d.png"
 
     /**
@@ -41,28 +42,35 @@ object MapTiles {
     private var liveTileUrl: String? = null
 
     /**
-     * Live-map tile URL template: CARTO dark if a probe tile returns an image (the
-     * service is intermittently key-gated), otherwise plain OSM. Result cached for
-     * the process lifetime. Only the probe result is logged — never user coordinates.
+     * Live-map tile URL template. CARTO dark is used ONLY when CARTO_API_KEY is set in
+     * local.properties (injected into BuildConfig) and a probe tile returns a real image —
+     * otherwise plain OSM. This guarantees the "API KEY REQUIRED" placeholder tile can
+     * never reach the screen.
      */
     fun liveTileUrlTemplate(): String {
         liveTileUrl?.let { return it }
-        val probeUrl = "https://basemaps.cartocdn.com/dark_all/10/548/335.png"
-        val darkOk = runCatching {
-            val conn = URL(probeUrl).openConnection() as java.net.HttpURLConnection
-            try {
-                conn.connectTimeout = 2_500
-                conn.readTimeout = 2_500
-                conn.setRequestProperty("User-Agent", USER_AGENT)
-                conn.connect()
-                val code = conn.responseCode
-                val contentType = conn.contentType ?: ""
-                Log.i("MapTiles", "dark_all probe HTTP $code content-type=$contentType")
-                code == 200 && contentType.startsWith("image/")
-            } finally {
-                conn.disconnect()
-            }
-        }.getOrDefault(false)
+        val key = com.alexander.routestory.BuildConfig.CARTO_API_KEY
+        var darkOk = false
+        if (key.isNotBlank()) {
+            darkOk = runCatching {
+                val probeUrl = "https://basemaps.cartocdn.com/dark_all/10/548/335.png?api_key=$key"
+                val conn = URL(probeUrl).openConnection() as java.net.HttpURLConnection
+                try {
+                    conn.connectTimeout = 2_500
+                    conn.readTimeout = 2_500
+                    conn.setRequestProperty("User-Agent", USER_AGENT)
+                    conn.connect()
+                    val code = conn.responseCode
+                    val contentType = conn.contentType ?: ""
+                    Log.i("MapTiles", "dark_all probe HTTP $code content-type=$contentType")
+                    code == 200 && contentType.startsWith("image/")
+                } finally {
+                    conn.disconnect()
+                }
+            }.getOrDefault(false)
+        } else {
+            Log.i("MapTiles", "CARTO_API_KEY not set -> live tiles = OSM")
+        }
         val chosen = if (darkOk) DARK_TILE_URL else OSM_TILE_URL
         Log.i("MapTiles", "live tiles -> ${if (darkOk) "carto dark_all" else "osm"}")
         liveTileUrl = chosen

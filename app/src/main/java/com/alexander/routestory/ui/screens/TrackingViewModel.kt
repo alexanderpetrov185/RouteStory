@@ -36,12 +36,12 @@ class TrackingViewModel @Inject constructor(
      * recording starts, so the tile mosaic and the "me" dot appear immediately on
      * screen entry instead of waiting for the first recorded track point.
      */
-    fun requestInitialFix() {
-        if (stateHolder.uiState.value.lastFix != null) return
+    fun requestInitialFix(force: Boolean = false) {
+        if (stateHolder.uiState.value.lastFix != null && !force) return
         runCatching {
             val client = LocationServices.getFusedLocationProviderClient(context)
             val apply: (android.location.Location?) -> Unit = { loc ->
-                if (loc != null && stateHolder.uiState.value.lastFix == null) {
+                if (loc != null && (force || stateHolder.uiState.value.lastFix == null)) {
                     stateHolder.update { it.copy(lastFix = loc.latitude to loc.longitude) }
                 }
             }

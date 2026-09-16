@@ -123,8 +123,9 @@ object OsmTileLayer {
     }
 
     private fun cacheFile(context: Context, z: Int, x: Int, y: Int): File =
-        // Namespaced per tile source so style switches never serve stale imagery.
-        File(context.filesDir, "map_tiles/live/$z/$x/$y.png")
+        // v2: bump after the "API KEY REQUIRED" Carto placeholder tiles may have been
+        // cached by older builds, so they can never be served again.
+        File(context.filesDir, "map_tiles/live2/$z/$x/$y.png")
 
     private fun loadTile(context: Context, z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(context, z, x, y)

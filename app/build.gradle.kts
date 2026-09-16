@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -15,6 +17,15 @@ android {
         targetSdk = 35
         versionCode = 5
         versionName = "0.5.0"
+
+
+        // Optional free CARTO basemap key (dark live tiles). Set CARTO_API_KEY=... in
+        // local.properties; when absent the live map falls back to plain OSM raster.
+        val localProps = Properties()
+        val localFile = rootProject.file("local.properties")
+        if (localFile.exists()) localProps.load(localFile.inputStream())
+        val cartoKey = localProps.getProperty("CARTO_API_KEY") ?: ""
+        buildConfigField("String", "CARTO_API_KEY", "\"$cartoKey\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

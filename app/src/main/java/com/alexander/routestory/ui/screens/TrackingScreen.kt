@@ -60,6 +60,7 @@ fun TrackingScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var hasPermissions by remember { mutableStateOf(false) }
     var gpsEnabled by remember { mutableStateOf(true) }
+    var locateTick by remember { mutableStateOf(0) }
 
     LaunchedEffect(Unit) {
         gpsEnabled = isGpsEnabled(context)
@@ -148,7 +149,12 @@ fun TrackingScreen(
                     .fillMaxWidth()
                     .weight(1f),
                 followLastPoint = true,
-                currentPosition = state.lastFix
+                currentPosition = state.lastFix,
+                locateTick = locateTick,
+                onLocate = {
+                    locateTick++
+                    viewModel.requestInitialFix(force = true)
+                }
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
