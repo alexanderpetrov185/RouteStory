@@ -13,6 +13,12 @@ object MapTiles {
     const val TRACKING_ZOOM = 16.0
 
     /**
+     * Identifying User-Agent required by the OSM Tile Usage Policy for every tile request
+     * (live map via MapLibre, availability probe and video snapshot alike).
+     */
+    const val USER_AGENT = "RouteStory/0.5.0 (Android; https://github.com/alexanderpetrov185/RouteStory)"
+
+    /**
      * Loads the bundled OSM raster style JSON from assets.
      * Returns null when the asset is missing (defensive, should not happen).
      */
@@ -51,6 +57,7 @@ object MapTiles {
             conn.connectTimeout = 6_000
             conn.readTimeout = 6_000
             conn.requestMethod = "HEAD"
+            conn.setRequestProperty("User-Agent", USER_AGENT)
             val code = conn.responseCode
             conn.disconnect()
             code in 200..399

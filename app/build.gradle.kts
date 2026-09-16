@@ -54,6 +54,8 @@ dependencies {
     implementation(libs.billing.ktx)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.maplibre.android.sdk)
+    // Used to inject the OSM-compliant User-Agent into MapLibre tile requests.
+    implementation(libs.okhttp)
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)
     ksp(libs.hilt.compiler)

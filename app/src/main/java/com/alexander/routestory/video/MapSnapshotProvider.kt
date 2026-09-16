@@ -6,7 +6,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.util.Log
+import com.alexander.routestory.BuildConfig
 import com.alexander.routestory.domain.Track
+import com.alexander.routestory.utils.MapTiles
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -39,8 +42,8 @@ class MapSnapshotProvider @Inject constructor(
 ) {
     companion object {
         // Same raster source as the live map style (assets/route_map_style.json):
-        // CARTO first (app-friendly, no UA restrictions), OSM raster as fallback.
-        private const val TILE_URL = "https://basemaps.cartocdn.com/light_all/%d/%d/%d.png"
+        // OSM raster tiles only, free, no API key.
+        private const val TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
         const val MAX_TILES = 24
         const val TILE_PX = 256
         const val MAX_ZOOM = 14
@@ -202,9 +205,14 @@ class MapSnapshotProvider @Inject constructor(
         try {
             connection.connectTimeout = 8_000
             connection.readTimeout = 8_000
-            connection.setRequestProperty("User-Agent", "RouteStory/1.0 (Android)")
+            connection.setRequestProperty("User-Agent", MapTiles.USER_AGENT)
             connection.connect()
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
+            val code = connection.responseCode
+            if (BuildConfig.DEBUG) {
+                // Tile grid only (z/x/y), never track coordinates.
+                Log.d("MapSnapshot", "tile z=$z HTTP $code")
+            }
+            if (code != HttpURLConnection.HTTP_OK) return null
             connection.inputStream.use { BitmapFactory.decodeStream(it) }
         } finally {
             connection.disconnect()
