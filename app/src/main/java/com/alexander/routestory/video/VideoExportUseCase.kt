@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -44,7 +45,17 @@ class VideoExportUseCase @Inject constructor(
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
             outFile = dest
             // Static map backdrop (cached tiles, offline-friendly); null falls back to dark bg.
-            background = runCatching { snapshotProvider.snapshot(track, limits.width, limits.height) }.getOrNull()
+            // Hard cap: if tiles are slow, a plain track-on-dark clip is better than hanging.
+            val snapshotStart = android.os.SystemClock.elapsedRealtime()
+            background = withTimeoutOrNull(12_000L) {
+                runCatching { snapshotProvider.snapshot(track, limits.width, limits.height) }.getOrNull()
+            }
+            Log.i(
+                "MapSnapshot",
+                "snapshot done in ${android.os.SystemClock.elapsedRealtime() - snapshotStart} ms " +
+                    "background=${background != null}"
+            )
+            val encodeStart = android.os.SystemClock.elapsedRealtime()
             val renderer = RouteFrameRenderer(limits)
             val frameCount = limits.durationSec * limits.fps
             // One reusable frame bitmap: no per-frame allocations on weak devices.
@@ -156,6 +167,10 @@ class VideoExportUseCase @Inject constructor(
 
             mux.stop()
             success = true
+            Log.i(
+                "MapSnapshot",
+                "encode done in ${android.os.SystemClock.elapsedRealtime() - encodeStart} ms frames=$frameCount ${limits.width}x${limits.height}@${limits.fps}"
+            )
             dest
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Must propagate: swallowing it would keep the cancelled job alive and let

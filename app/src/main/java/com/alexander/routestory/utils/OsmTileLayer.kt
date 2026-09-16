@@ -52,7 +52,9 @@ object OsmTileLayer {
         // Mercator stretches Y by 1/cos(lat); keep both spans in Mercator degrees.
         val latStretch = 1.0 / max(0.2, cos(Math.toRadians(centerLat)))
         val spanMerc = max(lonSpanDeg, latSpanDeg * latStretch)
-        for (z in 16 downTo 4) {
+        // Cap at 14: street-level 15-16 is visually noisy and costs extra tile downloads;
+        // 13-14 is enough for a live city map.
+        for (z in 14 downTo 4) {
             if (spanMerc <= 360.0 / (1 shl z) * (tiles - 1) * 0.9) return z
         }
         return 4
@@ -141,8 +143,8 @@ object OsmTileLayer {
         val url = URL(String.format(TILE_URL, z, x, y))
         val conn = url.openConnection() as HttpURLConnection
         try {
-            conn.connectTimeout = 6_000
-            conn.readTimeout = 6_000
+            conn.connectTimeout = 2_500
+            conn.readTimeout = 2_500
             conn.setRequestProperty("User-Agent", MapTiles.USER_AGENT)
             conn.connect()
             val code = conn.responseCode

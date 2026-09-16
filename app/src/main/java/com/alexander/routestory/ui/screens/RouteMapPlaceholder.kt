@@ -19,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -619,23 +620,32 @@ private fun RouteMapCanvas(
     val lonSpan = if (followFix != null) 0.004 else max(maxLon - minLon, 0.002)
 
     // OSM tile mosaic behind the route (real map imagery without MapLibre).
-    // Re-queried only when the covered window grows meaningfully (>= 40% of tile span).
+    // Route, photos and the "me" dot render IMMEDIATELY; tiles are swapped in when the
+    // mosaic arrives. The fetch loop is NOT keyed on GPS ticks: it re-fetches only when
+    // the window meaningfully changed (center moved ~1 km or the span grew), and the
+    // previous mosaic stays on screen while the next one is downloading.
     var mosaic by remember { mutableStateOf<OsmTileLayer.Mosaic?>(null) }
-    var mosaicSpan by remember { mutableStateOf(0.0) }
-    LaunchedEffect(centerLat, centerLon, latSpan, lonSpan) {
-        val span = max(lonSpan, latSpan)
-        if (mosaic != null && span < mosaicSpan * 1.4) return@LaunchedEffect
-        val next = OsmTileLayer.mosaic(
-            context = context.applicationContext,
-            centerLat = centerLat,
-            centerLon = centerLon,
-            lonSpanDeg = lonSpan,
-            latSpanDeg = latSpan,
-            tiles = 3
-        )
-        if (next != null) {
-            mosaic = next
-            mosaicSpan = span
+    val window = rememberUpdatedState(listOf(centerLat, centerLon, lonSpan, latSpan))
+    LaunchedEffect(Unit) {
+        var lastKey = ""
+        while (true) {
+            val params = window.value
+            val key = "%.2f,%.2f|%.3f".format(params[0], params[1], max(params[2], params[3]))
+            if (key != lastKey) {
+                val next = OsmTileLayer.mosaic(
+                    context = context.applicationContext,
+                    centerLat = params[0],
+                    centerLon = params[1],
+                    lonSpanDeg = params[2],
+                    latSpanDeg = params[3],
+                    tiles = 2 // 2x2 = 4 tiles: fastest useful coverage
+                )
+                if (next != null) {
+                    mosaic = next
+                    lastKey = key
+                }
+            }
+            delay(1_000)
         }
     }
 
