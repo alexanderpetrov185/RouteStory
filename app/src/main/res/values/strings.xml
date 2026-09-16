@@ -56,5 +56,7 @@
     <string name="action_done">Готово</string>
     <string name="track_not_saved">Недостаточно данных для сохранения</string>
     <string name="map_no_network">Нет сети — карта из кэша</string>
+    <string name="map_no_net">Для отображения карты требуется подключение к интернету</string>
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
+    <string name="map_my_location">Моё местоположение</string>
 </resources>

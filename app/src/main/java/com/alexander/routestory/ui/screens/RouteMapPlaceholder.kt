@@ -9,8 +9,16 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.Card
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -19,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +56,7 @@ import com.alexander.routestory.utils.MapTiles
 import com.alexander.routestory.utils.OsmTileLayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -99,6 +109,8 @@ fun RouteMapPlaceholder(
     onLocate: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
     // Sprint 12: MapLibre stays blank on the target device even with a healthy network,
     // so FORCE_OSM_CANVAS routes every screen through the OsmTileLayer Canvas path.
     // Decided once per screen visit: swapping renderers mid-flight would destroy a live
@@ -163,17 +175,40 @@ fun RouteMapPlaceholder(
             )
         }
         onLocate?.let {
-            androidx.compose.material3.IconButton(
-                onClick = it,
+            val gpsDisabledText = stringResource(R.string.gps_disabled)
+            val myLocationText = stringResource(R.string.map_my_location)
+            FloatingActionButton(
+                onClick = {
+                    it()
+                    // No fix yet -> tell the user instead of silently doing nothing.
+                    if (currentPosition == null) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = gpsDisabledText,
+                                duration = SnackbarDuration.Short
+                            )
+                        }
+                    }
+                },
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(8.dp)
-                    .background(Color(0xCC1C2330), shape = androidx.compose.foundation.shape.CircleShape)
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = 6.dp,
+                    pressedElevation = 12.dp,
+                    focusedElevation = 8.dp
+                )
             ) {
-                // Core icon set has no "my location"; a simple crosshair glyph is enough.
-                Text("◎", color = Color.White, style = MaterialTheme.typography.titleLarge)
+                Icon(
+                    imageVector = Icons.Filled.MyLocation,
+                    contentDescription = myLocationText,
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
             }
         }
+        SnackbarHost(snackbarHostState)
         if (BuildConfig.DEBUG) {
             val fixText = currentPosition?.let { "%.5f,%.5f".format(it.first, it.second) } ?: "-"
             Text(

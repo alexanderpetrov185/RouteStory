@@ -47,7 +47,7 @@ class MapSnapshotProvider @Inject constructor(
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d"
         const val MAX_TILES = 9
         const val TILE_PX = 256
-        const val MAX_ZOOM = 14
+        const val MAX_ZOOM = 16
 
         /**
          * Exposes the exact zoom / tile grid / crop rectangle used by [snapshot] so
@@ -88,7 +88,11 @@ class MapSnapshotProvider @Inject constructor(
                 cropW = right - left,
                 cropH = bottom - top,
                 fullW = fullW,
-                fullH = fullH
+                fullH = fullH,
+                minLat = minLat,
+                maxLat = maxLat,
+                minLon = minLon,
+                maxLon = maxLon
             )
         }
 
@@ -96,10 +100,14 @@ class MapSnapshotProvider @Inject constructor(
             minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
             w: Int, h: Int
         ): Int {
+            // Sprint 16: pick the HIGHEST zoom whose tile grid still fits MAX_TILES.
+            // Short tracks must zoom IN (z 14-16, 1-9 tiles), never fall back to z=1
+            // (the whole world in one tile — unreadable). The crop itself is geo-exact,
+            // so grid size only affects resolution, not correctness.
             for (z in MAX_ZOOM downTo 1) {
                 val tx = tileX(maxLon, z) - tileX(minLon, z) + 1
                 val ty = tileY(minLat, z) - tileY(maxLat, z) + 1
-                if (tx * ty <= MAX_TILES && tx * TILE_PX >= w / 2 && ty * TILE_PX >= h / 2) return z
+                if (tx * ty <= MAX_TILES) return z
             }
             return 1
         }
@@ -132,7 +140,11 @@ class MapSnapshotProvider @Inject constructor(
         val cropW: Int,
         val cropH: Int,
         val fullW: Int,
-        val fullH: Int
+        val fullH: Int,
+        val minLat: Double,
+        val maxLat: Double,
+        val minLon: Double,
+        val maxLon: Double
     )
 
     suspend fun snapshot(track: Track, width: Int, height: Int): Bitmap? =
@@ -141,7 +153,13 @@ class MapSnapshotProvider @Inject constructor(
                 Log.i("MapSnapshot", "snapshot null: no crop (points<2 or span exceeds MAX_TILES=$MAX_TILES)")
                 return@withContext null
             }
-            Log.i("MapSnapshot", "snapshot z=${crop.zoom} tiles=${(crop.fullW / TILE_PX) * (crop.fullH / TILE_PX)}")
+            Log.i(
+                "MapSnapshot",
+                "snapshot bounds=(%.2f,%.2f)-(%.2f,%.2f) z=%d grid=%dx%d".format(
+                    crop.minLat, crop.minLon, crop.maxLat, crop.maxLon, crop.zoom,
+                    crop.fullW / TILE_PX, crop.fullH / TILE_PX
+                )
+            )
             val fullW = crop.fullW
             val fullH = crop.fullH
             val full = Bitmap.createBitmap(fullW, fullH, Bitmap.Config.RGB_565)
