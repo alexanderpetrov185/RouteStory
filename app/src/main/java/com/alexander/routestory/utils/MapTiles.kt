@@ -3,6 +3,7 @@ package com.alexander.routestory.utils
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.util.Log
 
 /**
  * Map configuration. Uses OSM raster tiles bundled as a MapLibre style in assets.
@@ -53,15 +54,30 @@ object MapTiles {
         val reachable = runCatching {
             val url = java.net.URL("https://tile.openstreetmap.org/0/0/0.png")
             val conn = url.openConnection() as java.net.HttpURLConnection
-            conn.instanceFollowRedirects = false
             conn.connectTimeout = 6_000
             conn.readTimeout = 6_000
-            conn.requestMethod = "HEAD"
+            conn.requestMethod = "GET"
             conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.connect()
             val code = conn.responseCode
+            val len = if (code in 200..299) {
+                conn.inputStream.use { input ->
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        total += read
+                    }
+                    total
+                }
+            } else 0
             conn.disconnect()
-            code in 200..399
-        }.getOrDefault(false)
+            Log.i("MapTiles", "tile probe HTTP $code bytes=$len")
+            code == 200 && len > 1000
+        }.getOrDefault(false).also {
+            Log.i("MapTiles", "canReachTileServer=$it")
+        }
         cachedReachable = reachable
         return reachable
     }

@@ -7,7 +7,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.util.Log
-import com.alexander.routestory.BuildConfig
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.utils.MapTiles
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -208,10 +207,8 @@ class MapSnapshotProvider @Inject constructor(
             connection.setRequestProperty("User-Agent", MapTiles.USER_AGENT)
             connection.connect()
             val code = connection.responseCode
-            if (BuildConfig.DEBUG) {
-                // Tile grid only (z/x/y), never track coordinates.
-                Log.d("MapSnapshot", "tile z=$z HTTP $code")
-            }
+            // Tile grid only (z/x/y), never track coordinates.
+            Log.i("MapSnapshot", "tile z=$z HTTP $code")
             if (code != HttpURLConnection.HTTP_OK) return null
             connection.inputStream.use { BitmapFactory.decodeStream(it) }
         } finally {

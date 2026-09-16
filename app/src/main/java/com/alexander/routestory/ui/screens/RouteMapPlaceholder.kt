@@ -1,7 +1,10 @@
 package com.alexander.routestory.ui.screens
 
+import android.os.Build
+import android.util.Log
 import android.widget.FrameLayout
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,9 +22,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -31,11 +38,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.alexander.routestory.BuildConfig
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackPoint
 import com.alexander.routestory.utils.MapAvailability
 import com.alexander.routestory.utils.MapTiles
+import com.alexander.routestory.utils.OsmTileLayer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
@@ -89,37 +101,69 @@ fun RouteMapPlaceholder(
     val mapAllowed = remember { MapAvailability.canUseMap(context.applicationContext) }
     var useCanvas by remember { mutableStateOf(!mapAllowed) }
     var online by remember { mutableStateOf(true) }
+    var styleOk by remember { mutableStateOf<Boolean?>(null) }
+    val onStyleResult = remember { { ok: Boolean, reason: String? ->
+        Log.i("RouteMap", "style ok=$ok reason=$reason")
+        styleOk = ok
+    } }
 
-    LaunchedEffect(Unit) { online = MapTiles.isOnline(context.applicationContext) }
+    Log.i("RouteMap", "map path: canUseMap=$mapAllowed canvas=$useCanvas")
 
-    if (useCanvas) {
-        Box(modifier = modifier) {
+    // ConnectivityManager alone is not enough: the emulator can report the radio as
+    // connected while tile.openstreetmap.org is actually unreachable. The real check is a
+    // GET request to the tile server.
+    LaunchedEffect(Unit) {
+        online = withContext(Dispatchers.IO) { MapTiles.canReachTileServer() }
+        Log.i("RouteMap", "tile server reach=$online")
+    }
+
+    Box(modifier = modifier) {
+        if (useCanvas) {
             RouteMapCanvas(
                 points = points,
                 photoPositions = photoPositions,
                 onPhotoTap = onPhotoTap,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                currentPosition = currentPosition
             )
-            if (!mapAllowed) {
-                MapNotice(
+            when {
+                !mapAllowed -> MapNotice(
                     text = stringResource(R.string.map_unavailable),
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
+                !online -> MapNotice(
+                    text = stringResource(R.string.map_no_network),
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
             }
+        } else {
+            MapLibreRouteMap(
+                points = points,
+                photoPositions = photoPositions,
+                onPhotoTap = onPhotoTap,
+                followLastPoint = followLastPoint,
+                currentPosition = currentPosition,
+                online = online,
+                onCreationFailed = { useCanvas = true },
+                onStyleResult = onStyleResult,
+                modifier = Modifier.fillMaxSize()
+            )
         }
-        return
+        if (BuildConfig.DEBUG) {
+            val fixText = currentPosition?.let { "%.5f,%.5f".format(it.first, it.second) } ?: "-"
+            Text(
+                text = "map=${if (useCanvas) "Canvas" else "ML"} reach=$online " +
+                    "style=${styleOk?.let { if (it) "ok" else "fail" } ?: "?"} fix=$fixText",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp)
+                    .background(Color(0xCC1C2330))
+                    .padding(4.dp)
+            )
+        }
     }
-
-    MapLibreRouteMap(
-        points = points,
-        photoPositions = photoPositions,
-        onPhotoTap = onPhotoTap,
-        followLastPoint = followLastPoint,
-        currentPosition = currentPosition,
-        online = online,
-        onCreationFailed = { useCanvas = true },
-        modifier = modifier
-    )
 }
 
 @Composable
@@ -220,11 +264,18 @@ private class MapHolder {
     }
 
     fun attachStyle(style: Style, lineColor: Int, markerColor: Int, meColor: Int) {
+        // Все источники должны быть зарегистрированы ДО добавления любого слоя, который
+        // на них ссылается. Иначе нативный движок MapLibre/Mapbox отклоняет слой с ошибкой
+        // "layer references source that is not defined", весь стиль не применяется и остаётся
+        // только background-цвет (песочный фон без тайлов). Исключение гасится обёрткой
+        // runCatching в map.setStyle, поэтому карта молча остаётся пустой.
         val empty = FeatureCollection.fromFeatures(emptyArray<Feature>())
         val route = GeoJsonSource(ROUTE_SOURCE, empty)
         val photos = GeoJsonSource(PHOTO_SOURCE, empty)
+        val me = GeoJsonSource(ME_SOURCE, empty)
         style.addSource(route)
         style.addSource(photos)
+        style.addSource(me)
         style.addLayer(
             LineLayer(ROUTE_LAYER, ROUTE_SOURCE).withProperties(
                 PropertyFactory.lineColor(lineColor),
@@ -247,8 +298,6 @@ private class MapHolder {
                 PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE)
             )
         )
-        val me = GeoJsonSource(ME_SOURCE, empty)
-        style.addSource(me)
         routeSource = route
         photosSource = photos
         meSource = me
@@ -355,6 +404,7 @@ private fun MapLibreRouteMap(
     currentPosition: Pair<Double, Double>?,
     online: Boolean,
     onCreationFailed: () -> Unit,
+    onStyleResult: (Boolean, String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -412,9 +462,29 @@ private fun MapLibreRouteMap(
                 holder.lastBoundsKey = null
                 holder.userPanned = false
                 holder.styleReady = false
+                // Real MapLibre failure callbacks instead of silent beige background.
+                created.addOnDidFailLoadingMapListener(object : MapView.OnDidFailLoadingMapListener {
+                    override fun onDidFailLoadingMap(reason: String) {
+                        Log.e("RouteMap", "MapLibre failed to load map: $reason")
+                        onCreationFailed()
+                    }
+                })
+                created.addOnDidFinishLoadingMapListener(object : MapView.OnDidFinishLoadingMapListener {
+                    override fun onDidFinishLoadingMap() {
+                        Log.i("RouteMap", "MapLibre finished loading map (backend ready)")
+                    }
+                })
+                val styleJson = MapTiles.loadStyleJson(appContext)
+                val builder = styleJson?.let { Style.Builder().fromJson(it) }
+                if (builder == null) {
+                    Log.e("RouteMap", "Failed to load OSM style asset, falling back to canvas")
+                    onCreationFailed()
+                    return@AndroidView created
+                }
                 created.getMapAsync { map ->
                     if (!holder.isAlive()) return@getMapAsync
                     holder.map = map
+                    Log.i("RouteMap", "MapLibre backend: ${MapLibre.getInstance(appContext)}")
                     map.addOnMapClickListener { latLng ->
                         if (holder.map !== map || !holder.isAlive()) return@addOnMapClickListener false
                         runCatching { holder.handleTap(map, latLng) }.getOrDefault(false)
@@ -426,20 +496,31 @@ private fun MapLibreRouteMap(
                     }
                     runCatching {
                         map.setStyle(
-                            Style.Builder().fromUri(MapTiles.STYLE_URI),
+                            builder,
                             object : Style.OnStyleLoaded {
                                 override fun onStyleLoaded(style: Style) {
                                     if (!holder.isAlive() || holder.map !== map) return
-                                    holder.attachStyle(style, lineColor, markerColor, meColor)
-                                    holder.styleReady = true
-                                    MapAvailability.markReady(appContext)
-                                    holder.updateRoute(points)
-                                    holder.updatePhotos()
-                                    holder.updateMe()
-                                    holder.updateCamera(map, points, followLastPoint, holder.me)
+                                    runCatching {
+                                        holder.attachStyle(style, lineColor, markerColor, meColor)
+                                        holder.styleReady = true
+                                        onStyleResult(true, null)
+                                        MapAvailability.markReady(appContext)
+                                        holder.updateRoute(points)
+                                        holder.updatePhotos()
+                                        holder.updateMe()
+                                        holder.updateCamera(map, points, followLastPoint, holder.me)
+                                    }.onFailure { e ->
+                                        Log.e("RouteMap", "Failed to apply style/layers", e)
+                                        onStyleResult(false, e.message)
+                                        onCreationFailed()
+                                    }
                                 }
                             }
                         )
+                    }.onFailure { e ->
+                        Log.e("RouteMap", "Failed to load map style", e)
+                        onStyleResult(false, e.message)
+                        onCreationFailed()
                     }
                 }
                 created
@@ -454,7 +535,7 @@ private fun MapLibreRouteMap(
         )
         if (!online || styleTimedOut) {
             MapNotice(
-                text = stringResource(R.string.map_no_network),
+                text = stringResource(R.string.map_no_net),
                 modifier = Modifier.align(Alignment.TopCenter)
             )
         }
@@ -508,20 +589,61 @@ private fun RouteMapCanvas(
     modifier: Modifier = Modifier,
     currentPosition: Pair<Double, Double>? = null
 ) {
+    val context = LocalContext.current
     val lineColor = MaterialTheme.colorScheme.primary
     val markerColor = MaterialTheme.colorScheme.tertiary
     val meColor = MaterialTheme.colorScheme.secondary
     val hasRoute = points.size >= 2
 
-    val minLat = if (hasRoute) points.minOf { it.lat } else 0.0
-    val maxLat = if (hasRoute) points.maxOf { it.lat } else 0.0
-    val minLon = if (hasRoute) points.minOf { it.lon } else 0.0
-    val maxLon = if (hasRoute) points.maxOf { it.lon } else 0.0
-    val latRange = max(maxLat - minLat, 1e-6)
-    val lonRange = max(maxLon - minLon, 1e-6)
+    // Geo window to cover: the route, or just the current fix when nothing is recorded yet.
+    val minLat = if (hasRoute) points.minOf { it.lat } else currentPosition?.first ?: 0.0
+    val maxLat = if (hasRoute) points.maxOf { it.lat } else currentPosition?.first ?: 0.0
+    val minLon = if (hasRoute) points.minOf { it.lon } else currentPosition?.second ?: 0.0
+    val maxLon = if (hasRoute) points.maxOf { it.lon } else currentPosition?.second ?: 0.0
+    val centerLat = (minLat + maxLat) / 2.0
+    val centerLon = (minLon + maxLon) / 2.0
+    val latSpan = max(maxLat - minLat, 0.002)
+    val lonSpan = max(maxLon - minLon, 0.002)
 
+    // OSM tile mosaic behind the route (real map imagery without MapLibre).
+    // Re-queried only when the covered window grows meaningfully (>= 40% of tile span).
+    var mosaic by remember { mutableStateOf<OsmTileLayer.Mosaic?>(null) }
+    var mosaicSpan by remember { mutableStateOf(0.0) }
+    LaunchedEffect(centerLat, centerLon, latSpan, lonSpan) {
+        val span = max(lonSpan, latSpan)
+        if (mosaic != null && span < mosaicSpan * 1.4) return@LaunchedEffect
+        val next = OsmTileLayer.mosaic(
+            context = context.applicationContext,
+            centerLat = centerLat,
+            centerLon = centerLon,
+            lonSpanDeg = lonSpan,
+            latSpanDeg = latSpan,
+            tiles = 3
+        )
+        if (next != null) {
+            mosaic = next
+            mosaicSpan = span
+        }
+    }
+
+    /**
+     * Projection matching the mosaic geometry (zoom / x0 / y0), so the route lands on
+     * the same pixels as the tile imagery. Falls back to a plain linear fit when the
+     * mosaic is unavailable (offline).
+     */
     fun project(lat: Double, lon: Double, width: Float, height: Float): Offset {
+        val m = mosaic
+        if (m != null) {
+            val n = 1 shl m.zoom
+            val x = (((lon + 180.0) / 360.0) * n - m.x0) * OsmTileLayer.TILE_PX / m.tilesX *
+                (width / OsmTileLayer.TILE_PX)
+            val y = (OsmTileLayer.mercYTiles(lat) * n - m.y0) * OsmTileLayer.TILE_PX / m.tilesY *
+                (height / OsmTileLayer.TILE_PX)
+            return Offset(x.toFloat(), y.toFloat())
+        }
         val padding = min(width, height) * 0.1f
+        val latRange = max(maxLat - minLat, 1e-6)
+        val lonRange = max(maxLon - minLon, 1e-6)
         val scaleX = (width - 2 * padding) / lonRange.toFloat()
         val scaleY = (height - 2 * padding) / latRange.toFloat()
         val scale = min(scaleX, scaleY)
@@ -553,6 +675,18 @@ private fun RouteMapCanvas(
     }
 
     Canvas(modifier = modifier.then(tapModifier)) {
+        // Map imagery first (when downloaded), then route, photos and the "me" dot.
+        mosaic?.let { m ->
+            // Stretch the square mosaic over the canvas; the projection above
+            // applies the same stretch, so imagery and route stay aligned.
+            drawImage(
+                image = m.bitmap.asImageBitmap(),
+                srcOffset = IntOffset.Zero,
+                srcSize = IntSize(m.widthPx, m.heightPx),
+                dstOffset = IntOffset(0, 0),
+                dstSize = IntSize(size.width.toInt(), size.height.toInt())
+            )
+        }
         if (hasRoute) {
             val path = Path()
             points.forEachIndexed { index, point ->
@@ -565,6 +699,17 @@ private fun RouteMapCanvas(
             val offset = project(position.first, position.second, size.width, size.height)
             drawCircle(markerColor, radius = 14f, center = offset)
             drawCircle(androidx.compose.ui.graphics.Color.White, radius = 5f, center = offset)
+        }
+        // Live GPS fix: visible even when no route points exist yet (single point case).
+        if (currentPosition != null) {
+            val pos = currentPosition
+            val center = if (hasRoute) {
+                project(pos.first, pos.second, size.width, size.height)
+            } else {
+                Offset(size.width / 2f, size.height / 2f)
+            }
+            drawCircle(meColor, radius = 12f, center = center)
+            drawCircle(androidx.compose.ui.graphics.Color.White, radius = 4f, center = center)
         }
     }
 }
