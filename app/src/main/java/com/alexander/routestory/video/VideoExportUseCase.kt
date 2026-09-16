@@ -35,6 +35,8 @@ class VideoExportUseCase @Inject constructor(
         var success = false
         var background: Bitmap? = null
         try {
+            // Nothing meaningful to animate; do not create a codec or an empty file.
+            if (track.points.size < 2) return@withContext null
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
             pruneOldVideos(dir)
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
@@ -52,14 +54,31 @@ class VideoExportUseCase @Inject constructor(
             val uvRow = IntArray(limits.width / 2)
 
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, limits.width, limits.height).apply {
-                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
+                )
                 setInteger(MediaFormat.KEY_FRAME_RATE, limits.fps)
                 setInteger(MediaFormat.KEY_BIT_RATE, limits.bitrate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             encoder = codec
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            // Prefer the explicit semi-planar (NV12) byte-buffer input: feeding a hand-rolled
+            // NV12 buffer avoids device-specific Image plane layouts (the source of the
+            // green/grey mush). Fall back to the Flexible + getInputImage path only when
+            // the encoder rejects the explicit format.
+            var useImageInput = false
+            runCatching {
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }.getOrElse {
+                useImageInput = true
+                format.setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+                )
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
             codec.start()
             val mux = MediaMuxer(dest.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             muxer = mux
@@ -76,10 +95,23 @@ class VideoExportUseCase @Inject constructor(
                 if (frame < frameCount && !eosSent) {
                     val inIndex = codec.dequeueInputBuffer(10_000L)
                     if (inIndex >= 0) {
-                        val image = codec.getInputImage(inIndex)
-                        if (image != null) {
-                            renderer.render(track, frame, frameCount, canvas, background)
-                            copyBitmapToImage(bitmap, image, yRow, uvRow)
+                        val queued = if (useImageInput) {
+                            val image = codec.getInputImage(inIndex)
+                            if (image != null) {
+                                renderer.render(track, frame, frameCount, canvas, background)
+                                copyBitmapToImage(bitmap, image, yRow, uvRow)
+                                true
+                            } else false
+                        } else {
+                            val inBuf = codec.getInputBuffer(inIndex)
+                            if (inBuf != null) {
+                                renderer.render(track, frame, frameCount, canvas, background)
+                                inBuf.clear()
+                                copyBitmapToNv12(bitmap, inBuf, yRow)
+                                true
+                            } else false
+                        }
+                        if (queued) {
                             val ptsUs = frame * 1_000_000L / limits.fps
                             val isLast = frame == frameCount - 1
                             val flags = if (isLast) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0
@@ -137,6 +169,49 @@ class VideoExportUseCase @Inject constructor(
         }
     }
 
+    /**
+     * RGBA bitmap -> NV12 (semi-planar YUV420) straight into the codec input byte buffer.
+     * BT.601 limited range. This avoids Image-plane layout quirks (planar vs semi-planar,
+     * padded row strides) that produced grey/green frames on some encoders.
+     */
+    private fun copyBitmapToNv12(bitmap: Bitmap, out: java.nio.ByteBuffer, yRow: IntArray) {
+        val w = bitmap.width
+        val h = bitmap.height
+        val uvStart = w * h
+        for (row in 0 until h) {
+            bitmap.getPixels(yRow, 0, w, 0, row, w, 1)
+            var i = 0
+            while (i < w) {
+                val px = yRow[i]
+                val r = (px shr 16) and 0xFF
+                val g = (px shr 8) and 0xFF
+                val b = px and 0xFF
+                // Y = (16829*R + 33039*G + 6416*B) / 65536 + 16 (BT.601 limited range)
+                val yVal = ((16829 * r + 33039 * g + 6416 * b) shr 16) + 16
+                out.put(row * w + i, yVal.coerceIn(0, 255).toByte())
+                i++
+            }
+            if (row % 2 == 0) {
+                var j = 0
+                while (j < w / 2) {
+                    // Sample the even-X pixel of the 2x2 block for U/V.
+                    val px = yRow[j * 2]
+                    val r = (px shr 16) and 0xFF
+                    val g = (px shr 8) and 0xFF
+                    val b = px and 0xFF
+                    // U = (-9714*R - 19071*G + 28784*B) / 65536 + 128
+                    val uVal = ((-9714 * r - 19071 * g + 28784 * b) shr 16) + 128
+                    // V = (28784*R - 24103*G - 4681*B) / 65536 + 128
+                    val vVal = ((28784 * r - 24103 * g - 4681 * b) shr 16) + 128
+                    val uvIdx = uvStart + (row / 2) * w + j * 2
+                    out.put(uvIdx, uVal.coerceIn(0, 255).toByte())
+                    out.put(uvIdx + 1, vVal.coerceIn(0, 255).toByte())
+                    j++
+                }
+            }
+        }
+    }
+
     private fun copyBitmapToImage(bitmap: Bitmap, image: Image, yRow: IntArray, uvRow: IntArray) {
         val w = image.width
         val h = image.height
@@ -153,7 +228,6 @@ class VideoExportUseCase @Inject constructor(
         val vPS = vPlane.pixelStride
         val vRS = vPlane.rowStride
         val halfW = w / 2
-        val halfH = h / 2
         for (row in 0 until h) {
             bitmap.getPixels(yRow, 0, w, 0, row, w, 1)
             var pos = row * yRS
@@ -163,20 +237,27 @@ class VideoExportUseCase @Inject constructor(
                 val r = (px shr 16) and 0xFF
                 val g = (px shr 8) and 0xFF
                 val b = px and 0xFF
-                yBuf.put(pos, (((16829 * r + 33039 * g + 6416 * b) shr 16) + 16).coerceIn(0, 255).toByte())
+                // Y = (16829*R + 33039*G + 6416*B) / 65536 + 16 (BT.601 limited range)
+                val yVal = ((16829 * r + 33039 * g + 6416 * b) shr 16) + 16
+                yBuf.put(pos, yVal.coerceIn(0, 255).toByte())
                 pos += yPS
                 i++
             }
             if (row % 2 == 0) {
-                val uvRowIndex = row / 2
+                val uvRowIdx = row / 2
                 var j = 0
                 while (j < halfW) {
+                    // Sample the even-X pixel of the 2x2 block for U/V.
                     val px = yRow[j * 2]
                     val r = (px shr 16) and 0xFF
                     val g = (px shr 8) and 0xFF
                     val b = px and 0xFF
-                    uBuf.put(uvRowIndex * uRS + j * uPS, (((-9714 * r - 19071 * g + 28784 * b) shr 16) + 128).coerceIn(0, 255).toByte())
-                    vBuf.put(uvRowIndex * vRS + j * vPS, (((28784 * r - 24103 * g - 4681 * b) shr 16) + 128).coerceIn(0, 255).toByte())
+                    // U = (-9714*R - 19071*G + 28784*B) / 65536 + 128
+                    val uVal = ((-9714 * r - 19071 * g + 28784 * b) shr 16) + 128
+                    // V = (28784*R - 24103*G - 4681*B) / 65536 + 128
+                    val vVal = ((28784 * r - 24103 * g - 4681 * b) shr 16) + 128
+                    uBuf.put(uvRowIdx * uRS + j * uPS, uVal.coerceIn(0, 255).toByte())
+                    vBuf.put(uvRowIdx * vRS + j * vPS, vVal.coerceIn(0, 255).toByte())
                     j++
                 }
             }

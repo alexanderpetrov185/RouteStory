@@ -1,13 +1,21 @@
-package com.alexander.routestory.video
+﻿package com.alexander.routestory.video
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import com.alexander.routestory.domain.Track
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -21,7 +29,7 @@ import kotlin.math.ln
 import kotlin.math.tan
 
 /**
- * Static map backdrop for the video from cached OpenFreeMap raster tiles.
+ * Static map backdrop for the video from cached OpenStreetMap raster tiles.
  * Plain PNG download + stitch, offline after the first export.
  * Null when offline with empty cache - renderer falls back to dark background.
  */
@@ -30,53 +38,140 @@ class MapSnapshotProvider @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     companion object {
-        private const val TILE_URL = "https://tiles.openfreemap.org/planet/%d/%d/%d.png"
-        private const val MAX_TILES = 24
-        private const val TILE_PX = 256
-        private const val MAX_ZOOM = 14
-    }
+        // Same raster source as the live map style (assets/route_map_style.json):
+        // CARTO first (app-friendly, no UA restrictions), OSM raster as fallback.
+        private const val TILE_URL = "https://basemaps.cartocdn.com/light_all/%d/%d/%d.png"
+        const val MAX_TILES = 24
+        const val TILE_PX = 256
+        const val MAX_ZOOM = 14
 
-    suspend fun snapshot(track: com.alexander.routestory.domain.Track, width: Int, height: Int): Bitmap? =
-        withContext(Dispatchers.IO) {
+        /**
+         * Exposes the exact zoom / tile grid / crop rectangle used by [snapshot] so
+         * [RouteFrameRenderer] can align its overlay in the same coordinate space.
+         * This keeps both classes coupled to one single source of truth instead of
+         * duplicating the zoom-picking heuristic in two places.
+         *
+         * Static (companion) because the renderer has no provider instance to call on;
+         * the crop calculation is pure and does not depend on the Context.
+         */
+        fun cropInfo(track: Track, width: Int, height: Int): CropInfo? {
             val points = track.points
-            if (points.size < 2) return@withContext null
+            if (points.size < 2) return null
             val minLat = points.minOf { it.lat }
             val maxLat = points.maxOf { it.lat }
             val minLon = points.minOf { it.lon }
             val maxLon = points.maxOf { it.lon }
-            val zoom = pickZoom(minLat, maxLat, minLon, maxLon, width, height)
-            val x0 = tileX(minLon, zoom)
-            val x1 = tileX(maxLon, zoom)
-            val y0 = tileY(maxLat, zoom)
-            val y1 = tileY(minLat, zoom)
-            val count = (x1 - x0 + 1) * (y1 - y0 + 1)
-            if (count <= 0 || count > MAX_TILES) return@withContext null
-            val fullW = (x1 - x0 + 1) * TILE_PX
-            val fullH = (y1 - y0 + 1) * TILE_PX
+            val z = pickZoom(minLat, maxLat, minLon, maxLon, width, height)
+            val x0 = tileX(minLon, z)
+            val x1 = tileX(maxLon, z)
+            val y0 = tileY(maxLat, z)
+            val y1 = tileY(minLat, z)
+            val tx = x1 - x0 + 1
+            val ty = y1 - y0 + 1
+            if (tx * ty <= 0 || tx * ty > MAX_TILES) return null
+            val fullW = tx * TILE_PX
+            val fullH = ty * TILE_PX
+            val left = ((fracX(minLon, z) - x0) * TILE_PX).toInt().coerceIn(0, fullW - 1)
+            val right = ((fracX(maxLon, z) - x0) * TILE_PX).toInt().coerceIn(left + 1, fullW)
+            val top = ((fracY(maxLat, z) - y0) * TILE_PX).toInt().coerceIn(0, fullH - 1)
+            val bottom = ((fracY(minLat, z) - y0) * TILE_PX).toInt().coerceIn(top + 1, fullH)
+            return CropInfo(
+                zoom = z,
+                x0 = x0,
+                y0 = y0,
+                leftPx = left,
+                topPx = top,
+                cropW = right - left,
+                cropH = bottom - top,
+                fullW = fullW,
+                fullH = fullH
+            )
+        }
+
+        private fun pickZoom(
+            minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
+            w: Int, h: Int
+        ): Int {
+            for (z in MAX_ZOOM downTo 1) {
+                val tx = tileX(maxLon, z) - tileX(minLon, z) + 1
+                val ty = tileY(minLat, z) - tileY(maxLat, z) + 1
+                if (tx * ty <= MAX_TILES && tx * TILE_PX >= w / 2 && ty * TILE_PX >= h / 2) return z
+            }
+            return 1
+        }
+
+        private fun fracX(lon: Double, z: Int): Double =
+            ((lon + 180.0) / 360.0) * (1 shl z)
+
+        private fun fracY(lat: Double, z: Int): Double {
+            val rad = Math.toRadians(lat.coerceIn(-85.0, 85.0))
+            return ((1.0 - ln(tan(rad) + 1.0 / cos(rad)) / Math.PI) / 2.0) * (1 shl z)
+        }
+
+        private fun tileX(lon: Double, z: Int): Int =
+            floor(fracX(lon, z)).toInt().coerceIn(0, (1 shl z) - 1)
+
+        private fun tileY(lat: Double, z: Int): Int =
+            floor(fracY(lat, z)).toInt().coerceIn(0, (1 shl z) - 1)
+    }
+
+    /**
+     * The exact zoom / tile grid / crop rectangle used by [snapshot] and
+     * [RouteFrameRenderer.buildProjection].
+     */
+    data class CropInfo(
+        val zoom: Int,
+        val x0: Int,
+        val y0: Int,
+        val leftPx: Int,
+        val topPx: Int,
+        val cropW: Int,
+        val cropH: Int,
+        val fullW: Int,
+        val fullH: Int
+    )
+
+    suspend fun snapshot(track: Track, width: Int, height: Int): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val crop = MapSnapshotProvider.cropInfo(track, width, height) ?: return@withContext null
+            val fullW = crop.fullW
+            val fullH = crop.fullH
             val full = Bitmap.createBitmap(fullW, fullH, Bitmap.Config.RGB_565)
             val canvas = Canvas(full)
-            for (x in x0..x1) {
-                for (y in y0..y1) {
-                    if (!currentCoroutineContext().isActive) {
-                        full.recycle()
-                        return@withContext null
+            val tileCountX = fullW / TILE_PX
+            val tileCountY = fullH / TILE_PX
+            val cells = ArrayList<Pair<Int, Int>>(tileCountX * tileCountY)
+            for (x in crop.x0 until crop.x0 + tileCountX) {
+                for (y in crop.y0 until crop.y0 + tileCountY) cells.add(x to y)
+            }
+            // Parallel tile loading (max 4 connections); one failed tile becomes a grey
+            // cell instead of discarding the whole backdrop.
+            val gate = Semaphore(4)
+            val tiles = coroutineScope {
+                cells.map { (x, y) ->
+                    async {
+                        gate.withPermit {
+                            if (!currentCoroutineContext().isActive) null else x to loadTile(crop.zoom, x, y)
+                        }
                     }
-                    val tile = loadTile(zoom, x, y)
-                    if (tile == null) {
-                        full.recycle()
-                        return@withContext null
-                    }
-                    canvas.drawBitmap(tile, ((x - x0) * TILE_PX).toFloat(), ((y - y0) * TILE_PX).toFloat(), null)
+                }.awaitAll()
+            }
+            val missingPaint = Paint().apply { color = Color.rgb(58, 63, 70) }
+            for ((index, entry) in tiles.withIndex()) {
+                if (entry == null) continue
+                val (_, tile) = entry
+                val dx = ((index % tileCountX) * TILE_PX).toFloat()
+                val dy = ((index / tileCountX) * TILE_PX).toFloat()
+                if (tile == null) {
+                    canvas.drawRect(dx, dy, dx + TILE_PX, dy + TILE_PX, missingPaint)
+                } else {
+                    canvas.drawBitmap(tile, dx, dy, null)
                     tile.recycle()
                 }
             }
             // Crop exact geo window, then scale once to the video frame.
-            val left = ((fracX(minLon, zoom) - x0) * TILE_PX).toInt().coerceIn(0, fullW - 1)
-            val right = ((fracX(maxLon, zoom) - x0) * TILE_PX).toInt().coerceIn(left + 1, fullW)
-            val top = ((fracY(maxLat, zoom) - y0) * TILE_PX).toInt().coerceIn(0, fullH - 1)
-            val bottom = ((fracY(minLat, zoom) - y0) * TILE_PX).toInt().coerceIn(top + 1, fullH)
             val result = runCatching {
-                val cropped = Bitmap.createBitmap(full, left, top, right - left, bottom - top)
+                val cropped = Bitmap.createBitmap(full, crop.leftPx, crop.topPx, crop.cropW, crop.cropH)
                 val scaled = Bitmap.createScaledBitmap(cropped, width, height, true)
                 if (scaled !== cropped) cropped.recycle()
                 scaled
@@ -115,21 +210,5 @@ class MapSnapshotProvider @Inject constructor(
             connection.disconnect()
         }
     }.getOrNull()
-
-    private fun pickZoom(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, w: Int, h: Int): Int {
-        for (z in MAX_ZOOM downTo 1) {
-            val tx = tileX(maxLon, z) - tileX(minLon, z) + 1
-            val ty = tileY(minLat, z) - tileY(maxLat, z) + 1
-            if (tx * ty <= MAX_TILES && tx * TILE_PX >= w / 2 && ty * TILE_PX >= h / 2) return z
-        }
-        return 1
-    }
-
-    private fun fracX(lon: Double, z: Int): Double = (lon + 180.0) / 360.0 * (1 shl z)
-    private fun fracY(lat: Double, z: Int): Double {
-        val rad = Math.toRadians(lat.coerceIn(-85.0, 85.0))
-        return (1.0 - ln(tan(rad) + 1.0 / cos(rad)) / Math.PI) / 2.0 * (1 shl z)
-    }
-    private fun tileX(lon: Double, z: Int): Int = floor(fracX(lon, z)).toInt().coerceIn(0, (1 shl z) - 1)
-    private fun tileY(lat: Double, z: Int): Int = floor(fracY(lat, z)).toInt().coerceIn(0, (1 shl z) - 1)
 }
+
