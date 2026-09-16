@@ -40,9 +40,10 @@ class MapSnapshotProvider @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     companion object {
-        // Same raster source as the live map style (assets/route_map_style.json):
-        // OSM raster tiles only, free, no API key.
-        private const val TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
+        // Video backdrop = Esri World Imagery satellite (free, no API key, attribution
+        // required). NOTE the URL order: MapServer tile path is z / y / x (not z/x/y)!
+        private const val TILE_URL =
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d.png"
         const val MAX_TILES = 9
         const val TILE_PX = 256
         const val MAX_ZOOM = 14
@@ -135,7 +136,11 @@ class MapSnapshotProvider @Inject constructor(
 
     suspend fun snapshot(track: Track, width: Int, height: Int): Bitmap? =
         withContext(Dispatchers.IO) {
-            val crop = MapSnapshotProvider.cropInfo(track, width, height) ?: return@withContext null
+            val crop = MapSnapshotProvider.cropInfo(track, width, height) ?: run {
+                Log.i("MapSnapshot", "snapshot null: no crop (points<2 or span exceeds MAX_TILES=$MAX_TILES)")
+                return@withContext null
+            }
+            Log.i("MapSnapshot", "snapshot z=${crop.zoom} tiles=${(crop.fullW / TILE_PX) * (crop.fullH / TILE_PX)}")
             val fullW = crop.fullW
             val fullH = crop.fullH
             val full = Bitmap.createBitmap(fullW, fullH, Bitmap.Config.RGB_565)
@@ -183,7 +188,8 @@ class MapSnapshotProvider @Inject constructor(
         }
 
     private fun cacheFile(z: Int, x: Int, y: Int): File =
-        File(context.filesDir, "map_tiles/$z/$x/$y.png")
+        // Separate namespace from the live-map tiles (different imagery source).
+        File(context.filesDir, "map_tiles/sat/$z/$x/$y.png")
 
     private fun loadTile(z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(z, x, y)
@@ -199,7 +205,7 @@ class MapSnapshotProvider @Inject constructor(
     }
 
     private fun downloadTile(z: Int, x: Int, y: Int): Bitmap? = runCatching {
-        val url = URL(String.format(TILE_URL, z, x, y))
+        val url = URL(String.format(TILE_URL, z, y, x))
         val connection = url.openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = 2_500

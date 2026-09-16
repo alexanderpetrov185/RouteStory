@@ -75,13 +75,17 @@ fun TrackingScreen(
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results -> hasPermissions = results.values.all { it } }
+    ) { results ->
+        hasPermissions = results.values.all { it }
+        if (hasPermissions) viewModel.requestInitialFix()
+    }
 
     LaunchedEffect(Unit) {
         hasPermissions = permissions.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
         if (!hasPermissions) permissionLauncher.launch(permissions)
+        else viewModel.requestInitialFix()
     }
 
     // Permissions and the GPS switch can change while the app is in the background.
@@ -143,7 +147,8 @@ fun TrackingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                followLastPoint = true
+                followLastPoint = true,
+                currentPosition = state.lastFix
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
+import java.net.URL
 
 /**
  * Map configuration. Uses OSM raster tiles bundled as a MapLibre style in assets.
@@ -12,6 +13,14 @@ import android.util.Log
 object MapTiles {
     /** Zoom level used while the camera follows the live position. */
     const val TRACKING_ZOOM = 16.0
+
+    /** OSM raster tiles — the guaranteed free fallback for the live map. */
+    const val OSM_TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
+
+    /** CARTO dark raster: muted dark style, better fit for a tracking screen than
+     *  the colourful OSM default. Requires no key on some deployments — probed at
+     *  runtime, and OSM is used whenever the probe does not return an image. */
+    private const val DARK_TILE_URL = "https://basemaps.cartocdn.com/dark_all/%d/%d/%d.png"
 
     /**
      * Sprint 12 (MVP decision): MapLibre on the test device stayed blank despite a
@@ -26,6 +35,39 @@ object MapTiles {
      * (live map via MapLibre, availability probe and video snapshot alike).
      */
     const val USER_AGENT = "RouteStory/0.5.0 (Android; https://github.com/alexanderpetrov185/RouteStory)"
+
+    /** True after [liveTileUrlTemplate] has chosen the dark style. */
+    @Volatile
+    private var liveTileUrl: String? = null
+
+    /**
+     * Live-map tile URL template: CARTO dark if a probe tile returns an image (the
+     * service is intermittently key-gated), otherwise plain OSM. Result cached for
+     * the process lifetime. Only the probe result is logged — never user coordinates.
+     */
+    fun liveTileUrlTemplate(): String {
+        liveTileUrl?.let { return it }
+        val probeUrl = "https://basemaps.cartocdn.com/dark_all/10/548/335.png"
+        val darkOk = runCatching {
+            val conn = URL(probeUrl).openConnection() as java.net.HttpURLConnection
+            try {
+                conn.connectTimeout = 2_500
+                conn.readTimeout = 2_500
+                conn.setRequestProperty("User-Agent", USER_AGENT)
+                conn.connect()
+                val code = conn.responseCode
+                val contentType = conn.contentType ?: ""
+                Log.i("MapTiles", "dark_all probe HTTP $code content-type=$contentType")
+                code == 200 && contentType.startsWith("image/")
+            } finally {
+                conn.disconnect()
+            }
+        }.getOrDefault(false)
+        val chosen = if (darkOk) DARK_TILE_URL else OSM_TILE_URL
+        Log.i("MapTiles", "live tiles -> ${if (darkOk) "carto dark_all" else "osm"}")
+        liveTileUrl = chosen
+        return chosen
+    }
 
     /**
      * Loads the bundled OSM raster style JSON from assets.

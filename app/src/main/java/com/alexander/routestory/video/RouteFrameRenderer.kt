@@ -9,8 +9,12 @@ import android.graphics.Typeface
 import android.util.LruCache
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.utils.GeoUtils
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.tan
 
 /** Renders a single video frame: animated route, photos, stats and a watermark. */
 class RouteFrameRenderer(private val limits: VideoLimits) {
@@ -18,14 +22,15 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private val bgPaint = Paint().apply { color = Color.rgb(22, 28, 38) }
     private val dimPaint = Paint().apply { color = Color.argb(90, 10, 14, 20) }
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.rgb(60, 90, 120)
+        // Bright colours chosen for contrast on satellite imagery (Sprint 14).
+        color = Color.rgb(245, 245, 245)
         style = Paint.Style.STROKE
         strokeWidth = 7f
         strokeCap = Paint.Cap.ROUND
     }
     private val trailPaint = Paint(routePaint).apply {
-        color = Color.rgb(66, 165, 245)
-        strokeWidth = 9f
+        color = Color.rgb(255, 193, 7)
+        strokeWidth = 10f
     }
     private val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 87, 34) }
     private val dotRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -53,6 +58,83 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         override fun sizeOf(key: String, value: Bitmap): Int = 1
     }
 
+    /**
+     * World Mercator projection matching the exact crop geometry used by
+     * [MapSnapshotProvider] (zoom / tileX / tileY / crop-left / crop-top),
+     * so that the route overlay lands on the same pixels as the map backdrop.
+     *
+     * The snapshot is stretched to the video frame (not aspect-preserving),
+     * so X and Y use independent scale factors.
+     */
+    private class MercatorProjection(
+        val zoom: Int,
+        val x0: Int,
+        val y0: Int,
+        val scaleX: Float,
+        val scaleY: Float,
+        val cropLeftPx: Float,
+        val cropTopPx: Float
+    ) {
+        private fun mercXTiles(lon: Double): Double {
+            val n = 1 shl zoom
+            return ((lon + 180.0) / 360.0) * n
+        }
+        private fun mercYTiles(lat: Double): Double {
+            val n = 1 shl zoom
+            val rad = Math.toRadians(lat.coerceIn(-85.0, 85.0))
+            val y = (1.0 - ln(tan(rad) + 1.0 / Math.cos(rad)) / Math.PI) / 2.0
+            return y * n
+        }
+        private val TILE_PX = 256f
+
+        /** Canvas-space X for a lon. */
+        fun x(lon: Double): Float =
+            ((mercXTiles(lon) * TILE_PX - cropLeftPx).toFloat()) * scaleX
+
+        /** Canvas-space Y for a lat. */
+        fun y(lat: Double): Float =
+            ((mercYTiles(lat) * TILE_PX - cropTopPx).toFloat()) * scaleY
+    }
+
+    /**
+     * Builds the Mercator projection from the single source of truth
+     * ([MapSnapshotProvider.cropInfo]), which guarantees that the route
+     * overlay lands on exactly the same pixels as the map backdrop.
+     *
+     * Returns null when the track has fewer than 2 points or no usable zoom
+     * is found; in that case the caller must not use the map backdrop either,
+     * otherwise the overlay would be drawn in a different coordinate space
+     * ("scribbles" on the video).
+     */
+    private fun buildProjection(
+        track: Track,
+        w: Float,
+        h: Float
+    ): MercatorProjection? {
+        val info = cropInfo(track, w.toInt(), h.toInt()) ?: return null
+        val cropW = info.cropW
+        val cropH = info.cropH
+        if (cropW <= 0 || cropH <= 0) return null
+        val scaleX = w / cropW
+        val scaleY = h / cropH
+        return MercatorProjection(
+            zoom = info.zoom,
+            x0 = info.x0,
+            y0 = info.y0,
+            scaleX = scaleX,
+            scaleY = scaleY,
+            cropLeftPx = info.leftPx.toFloat(),
+            cropTopPx = info.topPx.toFloat()
+        )
+    }
+
+    /**
+     * Delegates to [MapSnapshotProvider.cropInfo] — the single source of truth for
+     * the zoom / crop used by both the video backdrop and this overlay.
+     */
+    private fun cropInfo(track: Track, w: Int, h: Int): MapSnapshotProvider.CropInfo? =
+        MapSnapshotProvider.cropInfo(track, w, h)
+
     fun render(track: Track, frame: Int, frameCount: Int, canvas: Canvas, background: Bitmap? = null) {
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
@@ -68,6 +150,10 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             drawTexts(track, canvas, w, h)
             return
         }
+
+        // Use Mercator projection that aligns with the map background when one is present.
+        val mercator = if (background != null) buildProjection(track, w, h) else null
+
         val minLat = track.points.minOf { it.lat }
         val maxLat = track.points.maxOf { it.lat }
         val minLon = track.points.minOf { it.lon }
@@ -76,9 +162,13 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val lonRange = max(maxLon - minLon, 1e-6)
 
         fun project(lat: Double, lon: Double): Pair<Float, Float> {
+            mercator?.let { p ->
+                return p.x(lon) to p.y(lat)
+            }
+            // Fallback: linear projection (no map background).
             val padding = min(w, h) * 0.15f
-            val scaleX = (w - 2 * padding) / lonRange.toFloat()
-            val scaleY = (h - 2 * padding) / latRange.toFloat()
+            val scaleX = (w - 2 * padding) / lonRange
+            val scaleY = (h - 2 * padding) / latRange
             val scale = min(scaleX, scaleY)
             val x = padding + ((lon - minLon) * scale).toFloat() +
                 (w - 2 * padding - ((maxLon - minLon) * scale).toFloat()) / 2f

@@ -32,7 +32,6 @@ import kotlin.math.tan
  */
 object OsmTileLayer {
     const val TILE_PX = 256
-    private const val TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
 
     /** Tile mosaic anchored at tile (x0, y0); bitmap is tiles*256 px in each axis. */
     data class Mosaic(
@@ -124,7 +123,8 @@ object OsmTileLayer {
     }
 
     private fun cacheFile(context: Context, z: Int, x: Int, y: Int): File =
-        File(context.filesDir, "map_tiles/$z/$x/$y.png")
+        // Namespaced per tile source so style switches never serve stale imagery.
+        File(context.filesDir, "map_tiles/live/$z/$x/$y.png")
 
     private fun loadTile(context: Context, z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(context, z, x, y)
@@ -140,7 +140,7 @@ object OsmTileLayer {
     }
 
     private fun downloadTile(z: Int, x: Int, y: Int): Bitmap? = runCatching {
-        val url = URL(String.format(TILE_URL, z, x, y))
+        val url = URL(String.format(MapTiles.liveTileUrlTemplate(), z, x, y))
         val conn = url.openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 2_500
