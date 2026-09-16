@@ -68,6 +68,48 @@ object OsmTileLayer {
     fun mercYTiles(lat: Double): Double = mercYTil(lat)
 
     /**
+     * Pixel coordinates inside the square tile mosaic for a given lat/lon.
+     * x grows eastward and y grows southward, both in pixels (0..=widthPx).
+     * Intended for the live Canvas renderer and the video camera model.
+     */
+    fun projectPoint(
+        zoom: Int,
+        x0: Int,
+        y0: Int,
+        widthPx: Int,
+        heightPx: Int,
+        lat: Double,
+        lon: Double
+    ): androidx.compose.ui.geometry.Offset {
+        val n = 1 shl zoom
+        val px = (((lon + 180.0) / 360.0) * n - x0).toFloat() * TILE_PX
+        val py = (mercYTiles(lat) * n - y0).toFloat() * TILE_PX
+        return androidx.compose.ui.geometry.Offset(px, py)
+    }
+
+    /**
+     * Inverse of projectPoint: pixel coords inside the mosaic → lat/lon.
+     * Used by the live Canvas to detect when the zoom/pan view falls outside the
+     * currently loaded mosaic and to debounce a reload with a new zoom/centre.
+     */
+    fun inverseMosaicPoint(
+        zoom: Int,
+        x0: Int,
+        y0: Int,
+        xPx: Float,
+        yPx: Float
+    ): Pair<Double, Double> {
+        val n = 1 shl zoom
+        val lon = (xPx / TILE_PX + x0) / n * 360.0 - 180.0
+        val yTile = (yPx / TILE_PX + y0)
+        val lat = inverseMerc(yTile.toDouble() / n)
+        return lon to lat
+    }
+
+    private fun inverseMerc(y: Double): Double =
+        Math.toDegrees(Math.atan(kotlin.math.sinh(Math.PI * (1 - 2 * y))))
+
+    /**
      * Downloads a tiles x tiles OSM mosaic centred on (centerLat, centerLon).
      * Failed tiles are painted grey; null only when every tile failed.
      */
@@ -77,9 +119,10 @@ object OsmTileLayer {
         centerLon: Double,
         lonSpanDeg: Double,
         latSpanDeg: Double,
-        tiles: Int = 3
+        tiles: Int = 3,
+        requestedZoom: Int? = null
     ): Mosaic? = withContext(Dispatchers.IO) {
-        val zoom = pickZoom(centerLat, lonSpanDeg, latSpanDeg, tiles)
+        val zoom = requestedZoom?.coerceIn(4, 14) ?: pickZoom(centerLat, lonSpanDeg, latSpanDeg, tiles)
         val n = 1 shl zoom
         val cx = floor(((centerLon + 180.0) / 360.0) * n).toInt().coerceIn(0, n - 1)
         val cy = floor(mercYTil(centerLat) * n).toInt().coerceIn(0, n - 1)

@@ -64,7 +64,7 @@ class MapSnapshotProvider @Inject constructor(
          */
         fun cropInfo(track: Track, width: Int, height: Int): CropInfo? {
             val points = track.points
-            if (points.size < 2) return null
+            if (points.isEmpty()) return null
             val rawMinLat = points.minOf { it.lat }
             val rawMaxLat = points.maxOf { it.lat }
             val rawMinLon = points.minOf { it.lon }
@@ -77,10 +77,19 @@ class MapSnapshotProvider @Inject constructor(
             val centerLon = (rawMinLon + rawMaxLon) / 2.0
             val halfLat = max((rawMaxLat - rawMinLat) / 2.0, MIN_SPAN_LAT / 2.0)
             val halfLon = max((rawMaxLon - rawMinLon) / 2.0, MIN_SPAN_LON / 2.0)
-            val minLat = centerLat - halfLat
-            val maxLat = centerLat + halfLat
-            val minLon = centerLon - halfLon
-            val maxLon = centerLon + halfLon
+            // Pad in Mercator and fit the output aspect BEFORE selecting the tile grid.
+            // The overview contains both endpoints with room for marker rings and labels.
+            val northY = fracY(centerLat + halfLat, 0)
+            val southY = fracY(centerLat - halfLat, 0)
+            val centerY = (northY + southY) / 2
+            val aspect = width.toDouble() / height
+            val spanY = max((southY - northY) * 1.5, halfLon * 2 / 360 * 1.5 / aspect)
+            val spanX = spanY * aspect
+            fun latitude(y: Double) = Math.toDegrees(kotlin.math.atan(kotlin.math.sinh(Math.PI * (1 - 2 * y))))
+            val minLat = latitude((centerY + spanY / 2).coerceIn(0.0, 1.0))
+            val maxLat = latitude((centerY - spanY / 2).coerceIn(0.0, 1.0))
+            val minLon = (centerLon - spanX * 180).coerceIn(-180.0, 180.0)
+            val maxLon = (centerLon + spanX * 180).coerceIn(-180.0, 180.0)
             val z = pickZoom(minLat, maxLat, minLon, maxLon, width, height)
             val x0 = tileX(minLon, z)
             val x1 = tileX(maxLon, z)
@@ -165,26 +174,24 @@ class MapSnapshotProvider @Inject constructor(
 
     suspend fun snapshot(track: Track, width: Int, height: Int): Bitmap? =
         withContext(Dispatchers.IO) {
-            val crop = MapSnapshotProvider.cropInfo(track, width, height) ?: run {
-                Log.i("MapSnapshot", "snapshot null: no crop (points<2 or span exceeds MAX_TILES=$MAX_TILES)")
+            val crop = cropInfo(track, width, height) ?: run {
+                Log.i("MapSnapshot", "snapshot null: no usable crop")
                 return@withContext null
             }
-            Log.i(
-                "MapSnapshot",
-                "snapshot bounds=(%.2f,%.2f)-(%.2f,%.2f) z=%d grid=%dx%d".format(
-                    crop.minLat, crop.minLon, crop.maxLat, crop.maxLon, crop.zoom,
-                    crop.fullW / TILE_PX, crop.fullH / TILE_PX
-                )
-            )
+            val zoom = crop.zoom
+            val x0 = crop.x0
+            val y0 = crop.y0
             val fullW = crop.fullW
             val fullH = crop.fullH
+            Log.i("MapSnapshot", "snapshot z=$zoom grid=${fullW / TILE_PX}x${fullH / TILE_PX}")
             val full = Bitmap.createBitmap(fullW, fullH, Bitmap.Config.RGB_565)
             val canvas = Canvas(full)
             val tileCountX = fullW / TILE_PX
             val tileCountY = fullH / TILE_PX
             val cells = ArrayList<Pair<Int, Int>>(tileCountX * tileCountY)
-            for (x in crop.x0 until crop.x0 + tileCountX) {
-                for (y in crop.y0 until crop.y0 + tileCountY) cells.add(x to y)
+            // Row-major, matching index % tileCountX and index / tileCountX below.
+            for (y in y0 until y0 + tileCountY) {
+                for (x in x0 until x0 + tileCountX) cells.add(x to y)
             }
             // Parallel tile loading (max 4 connections); one failed tile becomes a grey
             // cell instead of discarding the whole backdrop.
@@ -193,7 +200,7 @@ class MapSnapshotProvider @Inject constructor(
                 cells.map { (x, y) ->
                     async {
                         gate.withPermit {
-                            if (!currentCoroutineContext().isActive) null else x to loadTile(crop.zoom, x, y)
+                            if (!currentCoroutineContext().isActive) null else x to loadTile(zoom, x, y)
                         }
                     }
                 }.awaitAll()

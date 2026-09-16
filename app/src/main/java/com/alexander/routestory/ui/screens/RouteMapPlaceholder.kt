@@ -13,6 +13,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -43,6 +44,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -699,66 +702,57 @@ private fun RouteMapCanvas(
     val latSpan = if (followFix != null) 0.004 else max(maxLat - minLat, 0.002)
     val lonSpan = if (followFix != null) 0.004 else max(maxLon - minLon, 0.002)
 
-    // OSM tile mosaic behind the route (real map imagery without MapLibre).
-    // Route, photos and the "me" dot render IMMEDIATELY; tiles are swapped in when the
-    // mosaic arrives. The fetch loop is NOT keyed on GPS ticks: it re-fetches only when
-    // the window meaningfully changed (center moved ~1 km or the span grew), and the
-    // previous mosaic stays on screen while the next one is downloading.
+    // Normalized Web Mercator camera. Imagery and overlays share ONE pixel scale.
+    var manualCenter by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var userZoom by remember { mutableStateOf<Float?>(null) }
+    var locateFollow by remember { mutableStateOf(false) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    LaunchedEffect(locateTick) {
+        if (locateTick > 0) {
+            manualCenter = null
+            locateFollow = true
+        }
+    }
+    val target = if (locateFollow) currentPosition else null
+    val viewX = manualCenter?.first ?: (((target?.second ?: centerLon) + 180.0) / 360.0)
+    val viewY = manualCenter?.second ?: OsmTileLayer.mercYTiles(target?.first ?: centerLat)
+    val zoom = userZoom ?: OsmTileLayer.pickZoom(centerLat, lonSpan, latSpan, 2).toFloat()
+    val tileZoom = kotlin.math.floor(zoom).toInt().coerceIn(4, 14)
+    // At integer zoom the viewport spans at most two tiles; a 3x3 grid covers its edges.
+    val density = max(canvasSize.width, canvasSize.height).coerceAtLeast(1) / 512.0
+    val worldPixels = 256.0 * Math.pow(2.0, zoom.toDouble()) * density
+    val tileN = 1 shl tileZoom
+    val tileX = kotlin.math.floor(viewX * tileN).toInt().coerceIn(0, tileN - 1)
+    val tileY = kotlin.math.floor(viewY * tileN).toInt().coerceIn(0, tileN - 1)
     var mosaic by remember { mutableStateOf<OsmTileLayer.Mosaic?>(null) }
-    val window = rememberUpdatedState(
-        listOf(centerLat, centerLon, lonSpan, latSpan) to locateTick
+    val hasPosition = currentPosition != null || points.isNotEmpty()
+    // One fetch path, debounced by viewport tile/zoom, not by every GPS fix.
+    LaunchedEffect(tileZoom, tileX, tileY, hasPosition) {
+        if (!hasPosition) return@LaunchedEffect
+        delay(250)
+        val lat = Math.toDegrees(kotlin.math.atan(kotlin.math.sinh(Math.PI * (1 - 2 * viewY))))
+        val next = OsmTileLayer.mosaic(
+            context.applicationContext, lat, viewX * 360.0 - 180.0,
+            lonSpan, latSpan, tiles = 3, requestedZoom = tileZoom
+        )
+        if (next != null) mosaic = next
+    }
+    val transform by rememberUpdatedState<(Offset, Offset, Float) -> Unit>({ centroid, pan, factor ->
+        val nextZoom = (zoom + (kotlin.math.ln(factor.toDouble()) / kotlin.math.ln(2.0)).toFloat())
+            .coerceIn(4f, 14f)
+        val nextPixels = 256.0 * Math.pow(2.0, nextZoom.toDouble()) * density
+        val dx = centroid.x - canvasSize.width / 2f
+        val dy = centroid.y - canvasSize.height / 2f
+        manualCenter =
+            (viewX + dx / worldPixels - (dx + pan.x) / nextPixels).coerceIn(0.0, 1.0) to
+            (viewY + dy / worldPixels - (dy + pan.y) / nextPixels).coerceIn(0.0, 1.0)
+        userZoom = nextZoom
+        locateFollow = false
+    })
+    fun project(lat: Double, lon: Double, width: Float, height: Float): Offset = Offset(
+        (width / 2.0 + ((lon + 180.0) / 360.0 - viewX) * worldPixels).toFloat(),
+        (height / 2.0 + (OsmTileLayer.mercYTiles(lat) - viewY) * worldPixels).toFloat()
     )
-    LaunchedEffect(Unit) {
-        var lastKey = ""
-        while (true) {
-            val (geo, tick) = window.value
-            // locateTick forces an immediate re-centre on the latest fix (locate button).
-            val key = "%.2f,%.2f|%.3f|tick=%d".format(geo[0], geo[1], max(geo[2], geo[3]), tick)
-            if (key != lastKey) {
-                val next = OsmTileLayer.mosaic(
-                    context = context.applicationContext,
-                    centerLat = geo[0],
-                    centerLon = geo[1],
-                    lonSpanDeg = geo[2],
-                    latSpanDeg = geo[3],
-                    tiles = 2 // 2x2 = 4 tiles: fastest useful coverage
-                )
-                if (next != null) {
-                    mosaic = next
-                    lastKey = key
-                }
-            }
-            delay(1_000)
-        }
-    }
-
-    /**
-     * Projection matching the mosaic geometry (zoom / x0 / y0), so the route lands on
-     * the same pixels as the tile imagery. Falls back to a plain linear fit when the
-     * mosaic is unavailable (offline).
-     */
-    fun project(lat: Double, lon: Double, width: Float, height: Float): Offset {
-        val m = mosaic
-        if (m != null) {
-            val n = 1 shl m.zoom
-            val x = (((lon + 180.0) / 360.0) * n - m.x0) * OsmTileLayer.TILE_PX / m.tilesX *
-                (width / OsmTileLayer.TILE_PX)
-            val y = (OsmTileLayer.mercYTiles(lat) * n - m.y0) * OsmTileLayer.TILE_PX / m.tilesY *
-                (height / OsmTileLayer.TILE_PX)
-            return Offset(x.toFloat(), y.toFloat())
-        }
-        val padding = min(width, height) * 0.1f
-        val latRange = max(maxLat - minLat, 1e-6)
-        val lonRange = max(maxLon - minLon, 1e-6)
-        val scaleX = (width - 2 * padding) / lonRange.toFloat()
-        val scaleY = (height - 2 * padding) / latRange.toFloat()
-        val scale = min(scaleX, scaleY)
-        val x = padding + ((lon - minLon) * scale).toFloat() +
-            (width - 2 * padding - ((maxLon - minLon) * scale).toFloat()) / 2f
-        val y = padding + ((maxLat - lat) * scale).toFloat() +
-            (height - 2 * padding - ((maxLat - minLat) * scale).toFloat()) / 2f
-        return Offset(x, y)
-    }
 
     val tapModifier = if (onPhotoTap != null && photoPositions.isNotEmpty()) {
         Modifier.pointerInput(photoPositions) {
@@ -780,18 +774,27 @@ private fun RouteMapCanvas(
         Modifier
     }
 
-    Canvas(modifier = modifier.then(tapModifier)) {
+    Canvas(modifier = modifier
+        .clipToBounds()
+        .onSizeChanged { canvasSize = it }
+        .then(tapModifier)
+        .pointerInput(Unit) {
+            detectTransformGestures { centroid, pan, scale, _ -> transform(centroid, pan, scale) }
+        }
+    ) {
         // Map imagery first (when downloaded), then route, photos and the "me" dot.
         mosaic?.let { m ->
-            // Stretch the square mosaic over the canvas; the projection above
-            // applies the same stretch, so imagery and route stay aligned.
-            drawImage(
-                image = m.bitmap.asImageBitmap(),
-                srcOffset = IntOffset.Zero,
-                srcSize = IntSize(m.widthPx, m.heightPx),
-                dstOffset = IntOffset(0, 0),
-                dstSize = IntSize(size.width.toInt(), size.height.toInt())
-            )
+            val n = (1 shl m.zoom).toDouble()
+            val scale = worldPixels / (n * OsmTileLayer.TILE_PX)
+            val left = size.width / 2.0 + (m.x0 / n - viewX) * worldPixels
+            val top = size.height / 2.0 + (m.y0 / n - viewY) * worldPixels
+            // One uniform transform even while the old mosaic remains during a zoom reload.
+            withTransform({
+                translate(left.toFloat(), top.toFloat())
+                scale(scale.toFloat(), scale.toFloat(), Offset.Zero)
+            }) {
+                drawImage(m.bitmap.asImageBitmap())
+            }
         }
         if (hasRoute) {
             val path = Path()
@@ -812,11 +815,7 @@ private fun RouteMapCanvas(
         // reads as "current position" on any backdrop.
         if (currentPosition != null) {
             val pos = currentPosition
-            val meCenter = if (hasRoute) {
-                project(pos.first, pos.second, size.width, size.height)
-            } else {
-                Offset(size.width / 2f, size.height / 2f)
-            }
+            val meCenter = project(pos.first, pos.second, size.width, size.height)
             val pulse = 1f + 0.18f * pulsePhase
             drawCircle(Color(0x332196F3), radius = 30f * pulse, center = meCenter)
             drawCircle(Color(0xFF0D47A1), radius = 18f, center = meCenter)

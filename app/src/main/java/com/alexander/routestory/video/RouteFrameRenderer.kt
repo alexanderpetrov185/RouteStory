@@ -165,8 +165,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             y0 = info.y0,
             scaleX = scaleX,
             scaleY = scaleY,
-            cropLeftPx = info.leftPx.toFloat(),
-            cropTopPx = info.topPx.toFloat()
+            cropLeftPx = (info.x0 * 256 + info.leftPx).toFloat(),
+            cropTopPx = (info.y0 * 256 + info.topPx).toFloat()
         )
     }
 
@@ -176,6 +176,9 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
      */
     private fun cropInfo(track: Track, w: Int, h: Int): MapSnapshotProvider.CropInfo? =
         MapSnapshotProvider.cropInfo(track, w, h)
+
+    private var motionTrack: Track? = null
+    private var motion: RouteVideoMotion? = null
 
     fun render(track: Track, frame: Int, frameCount: Int, canvas: Canvas, background: Bitmap? = null) {
         val w = canvas.width.toFloat()
@@ -214,7 +217,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val latRange = max(maxLat - minLat, 1e-6)
         val lonRange = max(maxLon - minLon, 1e-6)
 
-        fun project(lat: Double, lon: Double): Pair<Float, Float> {
+        fun baseProject(lat: Double, lon: Double): Pair<Float, Float> {
             mercator?.let { p ->
                 return p.x(lon) to p.y(lat)
             }
@@ -230,8 +233,44 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             return x to y
         }
 
-        val progress = ((frame + 1f) / frameCount).coerceIn(0f, 1f)
+        val progress = RouteVideoMotion.progress(frame, frameCount)
         val trackTime = track.startTime + ((track.endTime - track.startTime) * progress).toLong()
+        if (motionTrack !== track) {
+            motionTrack = track
+            motion = RouteVideoMotion(track.points)
+        }
+        val n = track.points.size
+        val pos = motion!!.position(progress)
+        val index = floor(pos).toInt().coerceIn(0, n - 2)
+        val frac = (pos - index).coerceIn(0f, 1f)
+        val cur = track.points[index]
+        val next = track.points[index + 1]
+        val curLat = cur.lat + (next.lat - cur.lat) * frac
+        val curLon = cur.lon + (next.lon - cur.lon) * frac
+        val blend = RouteVideoMotion.followBlend(progress)
+        val cameraZoom = 1f + blend
+        val (baseX, baseY) = baseProject(curLat, curLon)
+        // Clamp the follow window to the downloaded overview; no empty edges.
+        val centerX = (w / 2 + (baseX - w / 2) * blend)
+            .coerceIn(w / (2 * cameraZoom), w - w / (2 * cameraZoom))
+        val centerY = (h / 2 + (baseY - h / 2) * blend)
+            .coerceIn(h / (2 * cameraZoom), h - h / (2 * cameraZoom))
+        fun project(lat: Double, lon: Double): Pair<Float, Float> {
+            val (x, y) = baseProject(lat, lon)
+            return (x - centerX) * cameraZoom + w / 2 to (y - centerY) * cameraZoom + h / 2
+        }
+        if (background != null) {
+            canvas.save()
+            canvas.translate(w / 2, h / 2)
+            canvas.scale(cameraZoom, cameraZoom)
+            canvas.translate(-centerX, -centerY)
+            canvas.drawBitmap(brightenOnce(background), null, android.graphics.RectF(0f, 0f, w, h), null)
+            canvas.restore()
+            canvas.drawRect(0f, 0f, w, h, dimPaint)
+        }
+        if (frame % limits.fps == 0 || frame == frameCount - 1) {
+            android.util.Log.i("MapSnapshot", "videoCam z=${mercator?.zoom ?: 0} phase=${if (blend == 0f) "overview" else "follow"} pointIndex=$index zoom=$cameraZoom")
+        }
 
         // Full route underlay (always drawn, even for a two-point track).
         val fullPath = android.graphics.Path()
@@ -243,20 +282,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         // Whole route in the accent colour from frame 0 — it never "draws itself in".
         canvas.drawPath(fullPath, fullAccentPaint)
 
-        // Progress runs over the POINT INDEX, not wall-time: a short track still
-        // animates the marker along its whole length within the clip duration.
-        val n = track.points.size
-        val pos = progress * (n - 1)
-        val index = floor(pos).toInt().coerceIn(0, (n - 2).coerceAtLeast(0))
-        val frac = (pos - index).coerceIn(0f, 1f)
-        val next = track.points.getOrElse(index + 1) { track.points[index] }
-        val cur = track.points[index]
-        val curLat = cur.lat + (next.lat - cur.lat) * frac
-        val curLon = cur.lon + (next.lon - cur.lon) * frac
-
-        // Bright trail: the last ~15% of the travelled distance only.
-        val tailSpan = max(1f, (n - 1) * 0.15f)
-        val tailFrom = (pos - tailSpan).coerceAtLeast(0f)
+        // Bright trail: last 15% of route distance, not GPS sample count.
+        val tailFrom = motion!!.position((progress - 0.15f).coerceAtLeast(0f))
         val tailIndex = floor(tailFrom).toInt().coerceIn(0, index)
         val tailFrac = (tailFrom - tailIndex).coerceIn(0f, 1f)
         val tailBase = track.points[tailIndex]

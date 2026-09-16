@@ -14,10 +14,10 @@ data class VideoLimits(
     val maxPhotos: Int
 ) {
     companion object {
-        private const val FREE_DURATION_SEC = 12
+        private const val FREE_DURATION_SEC = 24
         private const val PRO_DURATION_SEC = 60
         private const val FREE_MAX_PHOTOS = 6
-        /** Free tier is capped to 360p/15fps/12s/1.5Mbps with a watermark and up to 6 photos —
+        /** Free tier is capped to 360p/15fps/24s/1.5Mbps with a watermark and up to 6 photos —
          *  tuned so a weak phone renders the clip in well under a minute.
          *  Pro tier is 720p/30fps/60s/5Mbps with no watermark and unlimited photos. */
         fun resolve(isPro: Boolean): VideoLimits =

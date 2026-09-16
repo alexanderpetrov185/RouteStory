@@ -38,7 +38,7 @@ class VideoExportUseCase @Inject constructor(
         var background: Bitmap? = null
         try {
             // Nothing meaningful to animate; do not create a codec or an empty file.
-            if (track.points.size < 2) return@withContext null
+            if (track.points.isEmpty()) return@withContext null
             Log.i("MapSnapshot", "export start points=${track.points.size}")
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
             pruneOldVideos(dir)

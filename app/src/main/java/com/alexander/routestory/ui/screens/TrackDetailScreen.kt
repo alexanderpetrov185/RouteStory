@@ -48,6 +48,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +81,7 @@ fun TrackDetailScreen(
     val track by viewModel.track.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val screenScope = rememberCoroutineScope()
     val videoState by viewModel.videoState.collectAsStateWithLifecycle()
     val isPro by viewModel.isPro.collectAsStateWithLifecycle()
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -315,7 +318,23 @@ fun TrackDetailScreen(
             )
         }
         is VideoExportState.Done -> {
-            AlertDialog(
+            var previewFailed by remember(videoResult.file) {
+                mutableStateOf(!videoResult.file.isFile || videoResult.file.length() == 0L)
+            }
+            var previewPrepared by remember(videoResult.file) { mutableStateOf(false) }
+            LaunchedEffect(videoResult.file) {
+                kotlinx.coroutines.delay(15_000)
+                if (!previewPrepared) previewFailed = true
+            }
+            LaunchedEffect(previewFailed) {
+                if (previewFailed) {
+                    screenScope.launch {
+                        snackbarHostState.showSnackbar(context.getString(R.string.video_error))
+                    }
+                    viewModel.consumeVideoResult()
+                }
+            }
+            if (!previewFailed) AlertDialog(
                 onDismissRequest = { viewModel.consumeVideoResult() },
                 title = { Text(stringResource(R.string.video_done)) },
                 text = {
@@ -325,18 +344,25 @@ fun TrackDetailScreen(
                                 // Local app file plays directly; start() only after the
                                 // surface is prepared (calling it too early is the usual
                                 // reason a preview stays black).
-                                setVideoURI(android.net.Uri.fromFile(videoResult.file))
                                 setOnPreparedListener { mp ->
+                                    previewPrepared = true
                                     mp.isLooping = true
                                     start()
                                 }
-                                setOnErrorListener { _, _, _ -> true }
+                                setOnErrorListener { _, what, extra ->
+                                    android.util.Log.w("MapSnapshot", "preview error what=$what extra=$extra")
+                                    previewFailed = true
+                                    true
+                                }
+                                setVideoURI(android.net.Uri.fromFile(videoResult.file))
                                 // Tap toggles play/pause.
                                 setOnClickListener {
                                     if (isPlaying) pause() else start()
                                 }
                             }
                         },
+                        onReset = null,
+                        onRelease = { it.stopPlayback() },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(240.dp)
