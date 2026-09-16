@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.location.Location
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
@@ -55,6 +56,12 @@ class TrackRecordingService : LifecycleService() {
     private var lastPointTimeMs = 0L
     private var tickJob: Job? = null
 
+    /**
+     * Position known right before Start (usually the lastFix shown on the map). The first
+     * recorded fix is compared against it to drop a startup teleport.
+     */
+    private var startAnchor: Pair<Double, Double>? = null
+
     @Volatile
     private var recording = false
 
@@ -91,6 +98,8 @@ class TrackRecordingService : LifecycleService() {
             accumulatedMs = 0L
             startTime = now
             segmentStartMs = now
+            // Anchor for the startup teleport guard: whatever the map showed before Start.
+            startAnchor = stateHolder.uiState.value.lastFix
             val dateText = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(now))
             trackName = getString(R.string.track_name_prefix) + dateText
         } else {
@@ -133,6 +142,7 @@ class TrackRecordingService : LifecycleService() {
         points.clear()
         totalDistanceM = 0f
         lastSpeedMps = 0f
+        startAnchor = null
         stateHolder.reset()
         lifecycleScope.launch {
             // The service is torn down right after saving, so the write must not be cancellable.
@@ -173,13 +183,36 @@ class TrackRecordingService : LifecycleService() {
             timestamp = location.time
         )
         val previous = points.lastOrNull()
+        // Startup teleport guard: the very first fix after Start can be far away from the
+        // pre-start lastFix (cold GPS start / network-based fix). Recording it would draw a
+        // fake line across the map, so the anchor is simply moved to the new position and
+        // the fix is not stored.
+        if (previous == null) {
+            val anchor = startAnchor
+            if (anchor != null) {
+                val jump = GeoUtils.distanceMeters(anchor.first, anchor.second, candidate.lat, candidate.lon)
+                if (jump > MAX_START_JUMP_M) {
+                    Log.i("TrackService", "start teleport ignored: ${jump.toInt()} m")
+                    startAnchor = candidate.lat to candidate.lon
+                    pushLiveState()
+                    return
+                }
+            }
+        }
         if (!LocationFilter.shouldAccept(previous, candidate)) return
         if (LocationFilter.isSignificantMove(previous, candidate)) {
             previous?.let { totalDistanceM += GeoUtils.distanceMeters(it, candidate) }
         }
         points.add(candidate)
         lastPointTimeMs = System.currentTimeMillis()
-        lastSpeedMps = if (location.hasSpeed() && location.speed > 0f) {
+        // GPS drift filter: when the user is essentially stationary (last point
+        // is less than STATIONARY_DISTANCE_M from the new fix), the GPS "speed"
+        // field is unreliable noise — freeze the speed display at 0 instead of
+        // showing spurious 1-5 m/s values.
+        val distanceFromLast = previous?.let { GeoUtils.distanceMeters(it, candidate) } ?: 0f
+        lastSpeedMps = if (distanceFromLast < STATIONARY_DISTANCE_M) {
+            0f
+        } else if (location.hasSpeed() && location.speed > 0f) {
             location.speed
         } else {
             computedSpeed()
@@ -309,9 +342,13 @@ class TrackRecordingService : LifecycleService() {
         const val ACTION_STOP = "com.alexander.routestory.action.STOP"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1
+        /** First fix farther than this from the pre-start position is treated as a teleport. */
+        private const val MAX_START_JUMP_M = 150f
         private const val UPDATE_INTERVAL_MS = 2000L
         private const val TICK_MS = 500L
         /** After this long without an accepted fix the displayed speed drops to zero. */
         private const val SPEED_STALE_MS = 10_000L
+        /** Distance below which a new GPS fix is considered "standing still" for speed display. */
+        private const val STATIONARY_DISTANCE_M = 5f
     }
 }

@@ -165,13 +165,29 @@ fun TrackingScreen(
                 StatItem(stringResource(R.string.stat_speed), GeoUtils.formatSpeed(state.speedMps))
             }
             when (state.state) {
-                TrackingState.IDLE -> Button(
-                    onClick = {
-                        if (hasPermissions) viewModel.start() else permissionLauncher.launch(permissions)
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(stringResource(R.string.action_start))
+                TrackingState.IDLE -> {
+                    // Recording needs a current fix: without it the first accepted point
+                    // could be a wild teleport and the track would start with garbage.
+                    Button(
+                        onClick = {
+                            if (hasPermissions) viewModel.start() else permissionLauncher.launch(permissions)
+                        },
+                        enabled = hasPermissions && state.lastFix != null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            stringResource(
+                                if (!hasPermissions) R.string.action_grant_location else R.string.action_start
+                            )
+                        )
+                    }
+                    if (hasPermissions && state.lastFix == null) {
+                        Text(
+                            text = stringResource(R.string.waiting_gps),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                    }
                 }
                 TrackingState.RECORDING -> {
                     OutlinedButton(onClick = viewModel::pause, modifier = Modifier.fillMaxWidth()) {

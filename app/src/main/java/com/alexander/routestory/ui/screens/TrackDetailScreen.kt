@@ -65,7 +65,6 @@ import com.alexander.routestory.domain.Track
 import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.service.VideoExportState
 import com.alexander.routestory.utils.GeoUtils
-import com.alexander.routestory.utils.GpxExporter
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,18 +92,6 @@ fun TrackDetailScreen(
     val saveVideoLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("video/mp4")
     ) { uri -> uri?.let { viewModel.saveVideoTo(it) } }
-
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/gpx+xml")
-    ) { uri -> uri?.let { viewModel.exportGpx(it) } }
-
-    LaunchedEffect(Unit) {
-        viewModel.exportResult.collect { ok ->
-            snackbarHostState.showSnackbar(
-                context.getString(if (ok) R.string.export_done else R.string.export_error)
-            )
-        }
-    }
 
     // The summary screen is opened right after a successful save.
     LaunchedEffect(isSummary) {
@@ -185,12 +172,6 @@ fun TrackDetailScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(stringResource(R.string.action_add_photo))
-                }
-                Button(
-                    onClick = { exportLauncher.launch(GpxExporter.suggestFileName(current)) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(stringResource(R.string.export_gpx))
                 }
                 Button(
                     onClick = { viewModel.createVideo(current) },
@@ -341,12 +322,24 @@ fun TrackDetailScreen(
                     AndroidView(
                         factory = { ctx ->
                             VideoView(ctx).apply {
-                                setVideoPath(videoResult.file.absolutePath)
-                                setOnCompletionListener { it.start() }
-                                start()
+                                // Local app file plays directly; start() only after the
+                                // surface is prepared (calling it too early is the usual
+                                // reason a preview stays black).
+                                setVideoURI(android.net.Uri.fromFile(videoResult.file))
+                                setOnPreparedListener { mp ->
+                                    mp.isLooping = true
+                                    start()
+                                }
+                                setOnErrorListener { _, _, _ -> true }
+                                // Tap toggles play/pause.
+                                setOnClickListener {
+                                    if (isPlaying) pause() else start()
+                                }
                             }
                         },
-                        modifier = Modifier.fillMaxWidth().height(240.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(240.dp)
                     )
                 },
                 confirmButton = {

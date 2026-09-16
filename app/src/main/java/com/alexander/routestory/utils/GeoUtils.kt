@@ -3,22 +3,22 @@ package com.alexander.routestory.utils
 import com.alexander.routestory.domain.TrackPoint
 import java.text.SimpleDateFormat
 import java.util.Date
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.pow
-import kotlin.math.sin
-import kotlin.math.sqrt
+import kotlin.math.*
 
 object GeoUtils {
     private const val EARTH_RADIUS_M = 6371000.0
 
     /** Haversine distance between two points, in meters. */
-    fun distanceMeters(p1: TrackPoint, p2: TrackPoint): Float {
-        val dLat = Math.toRadians(p2.lat - p1.lat)
-        val dLon = Math.toRadians(p2.lon - p1.lon)
-        val lat1 = Math.toRadians(p1.lat)
-        val lat2 = Math.toRadians(p2.lat)
-        val a = sin(dLat / 2).pow(2) + cos(lat1) * cos(lat2) * sin(dLon / 2).pow(2)
+    fun distanceMeters(p1: TrackPoint, p2: TrackPoint): Float =
+        distanceMeters(p1.lat, p1.lon, p2.lat, p2.lon)
+
+    /** Haversine distance for raw coordinates, in meters. */
+    fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val radLat1 = Math.toRadians(lat1)
+        val radLat2 = Math.toRadians(lat2)
+        val a = sin(dLat / 2).pow(2) + cos(radLat1) * cos(radLat2) * sin(dLon / 2).pow(2)
         return (2 * EARTH_RADIUS_M * asin(sqrt(a))).toFloat()
     }
 
@@ -53,5 +53,13 @@ object GeoUtils {
             }
         }
         return null
+    }
+
+    /** Returns the normalized Web Mercator X and Y coordinates [0, 1]. */
+    fun getWebMercatorRel(lat: Double, lon: Double): Pair<Double, Double> {
+        val x = (lon + 180.0) / 360.0
+        val rad = Math.toRadians(lat.coerceIn(-85.0, 85.0))
+        val y = (1.0 - ln(tan(rad) + 1.0 / cos(rad)) / PI) / 2.0
+        return x to y
     }
 }

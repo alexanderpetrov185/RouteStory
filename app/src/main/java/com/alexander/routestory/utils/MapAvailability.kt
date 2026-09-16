@@ -3,6 +3,7 @@ package com.alexander.routestory.utils
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import com.alexander.routestory.BuildConfig
 import com.alexander.routestory.R
 
 /**
@@ -25,6 +26,12 @@ object MapAvailability {
     /** Called once from Application.onCreate, before any UI exists. */
     fun onProcessStart(context: Context) {
         val prefs = prefs(context)
+        // In debug builds the emulator flag and the crash counter are meant to be controlled
+        // manually, so a stale init_crashes value from an earlier build must not block MapLibre
+        // forever (it produced the silent beige square). Reset the crash lock on start.
+        if (BuildConfig.DEBUG && prefs.getInt(KEY_CRASHES, 0) > 0) {
+            prefs.edit().putInt(KEY_CRASHES, 0).commit()
+        }
         if (prefs.getBoolean(KEY_ATTEMPT, false)) {
             // The previous process died while the map was being created: count it and give up
             // on the map for a while instead of crashing again on every launch.
@@ -55,9 +62,13 @@ object MapAvailability {
     }
 
     private fun computeEnabled(context: Context, prefs: SharedPreferences): Boolean {
-        if (prefs.getInt(KEY_CRASHES, 0) >= MAX_CRASHES) return false
         val allowedOnEmulator = context.resources.getBoolean(R.bool.map_use_on_emulator)
-        if (isEmulator() && !allowedOnEmulator) return false
+        if (isEmulator()) {
+            // The manual flag decides for emulators: it is never silently overridden by a
+            // stale crash counter. map_use_on_emulator=false forces the canvas renderer.
+            return allowedOnEmulator
+        }
+        if (prefs.getInt(KEY_CRASHES, 0) >= MAX_CRASHES) return false
         return true
     }
 

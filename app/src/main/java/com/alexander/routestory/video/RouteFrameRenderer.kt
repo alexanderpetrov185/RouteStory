@@ -20,19 +20,39 @@ import kotlin.math.tan
 class RouteFrameRenderer(private val limits: VideoLimits) {
 
     private val bgPaint = Paint().apply { color = Color.rgb(22, 28, 38) }
-    private val dimPaint = Paint().apply { color = Color.argb(90, 10, 14, 20) }
+    private val dimPaint = Paint().apply { color = Color.argb(35, 10, 14, 20) }
+    /** Satellite tiles lean grey; a modest brightness/contrast lift makes them pop. */
+    private val brightenPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+        colorFilter = android.graphics.ColorMatrixColorFilter(
+            android.graphics.ColorMatrix(
+                floatArrayOf(
+                    1.18f, 0f, 0f, 0f, 8f,
+                    0f, 1.18f, 0f, 0f, 8f,
+                    0f, 0f, 1.18f, 0f, 8f,
+                    0f, 0f, 0f, 1f, 0f
+                )
+            )
+        )
+    }
     private val routePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         // Thick light underlay for the whole route: readable on satellite imagery.
         color = Color.rgb(245, 245, 245)
         style = Paint.Style.STROKE
-        strokeWidth = 9f
+        strokeWidth = 11f
         strokeCap = Paint.Cap.ROUND
     }
-    private val trailPaint = Paint(routePaint).apply {
-        // Bright accent drawn over the underlay for the travelled part.
+    private val fullAccentPaint = Paint(routePaint).apply {
+        // Whole route (A -> B) is drawn in the accent colour from the very first frame.
         color = Color.rgb(255, 160, 0)
+        strokeWidth = 6f
+    }
+    private val trailPaint = Paint(routePaint).apply {
+        // Bright moving highlight over the last part of the travelled path.
+        color = Color.rgb(255, 235, 59)
         strokeWidth = 13f
     }
+    private val startPointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(56, 209, 96) }
+    private val finishPointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(229, 57, 53) }
     private val dotHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         // Dark halo keeps the marker readable on light and dark imagery.
         color = Color.argb(150, 0, 0, 0)
@@ -59,6 +79,23 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         typeface = Typeface.DEFAULT_BOLD
     }
     private val photoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+    /** Source bitmap the cached brightened copy was built from. */
+    private var brightenedSource: Bitmap? = null
+    private var brightened: Bitmap? = null
+
+    /**
+     * The brightness lift is applied ONCE per background bitmap (not per frame):
+     * a 640x360 color-matrix pass on 180 frames is pure waste.
+     */
+    private fun brightenOnce(source: Bitmap): Bitmap {
+        brightenedSource?.let { if (it === source) brightened?.let { out -> return out } }
+        val out = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        Canvas(out).drawBitmap(source, 0f, 0f, brightenPaint)
+        brightenedSource = source
+        brightened = out
+        return out
+    }
     private val photoCache = object : LruCache<String, Bitmap>(12) {
         override fun sizeOf(key: String, value: Bitmap): Int = 1
     }
@@ -144,9 +181,10 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
         if (background != null) {
-            val src = android.graphics.Rect(0, 0, background.width, background.height)
+            val bright = brightenOnce(background)
+            val src = android.graphics.Rect(0, 0, bright.width, bright.height)
             val dst = android.graphics.RectF(0f, 0f, w, h)
-            canvas.drawBitmap(background, src, dst, null)
+            canvas.drawBitmap(bright, src, dst, null)
             canvas.drawRect(0f, 0f, w, h, dimPaint)
         } else {
             canvas.drawRect(0f, 0f, w, h, bgPaint)
@@ -202,6 +240,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             if (index == 0) fullPath.moveTo(x, y) else fullPath.lineTo(x, y)
         }
         canvas.drawPath(fullPath, routePaint)
+        // Whole route in the accent colour from frame 0 — it never "draws itself in".
+        canvas.drawPath(fullPath, fullAccentPaint)
 
         // Progress runs over the POINT INDEX, not wall-time: a short track still
         // animates the marker along its whole length within the clip duration.
@@ -234,6 +274,20 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val (cx0, cy0) = project(curLat, curLon)
         trail.lineTo(cx0, cy0)
         canvas.drawPath(trail, trailPaint)
+
+        // Start (green) and finish (red) end points of the route.
+        run {
+            val first = track.points.first()
+            val last = track.points.last()
+            val (sx, sy) = project(first.lat, first.lon)
+            val (fx, fy) = project(last.lat, last.lon)
+            canvas.drawCircle(sx, sy, 20f, dotHaloPaint)
+            canvas.drawCircle(sx, sy, 14f, startPointPaint)
+            canvas.drawCircle(sx, sy, 14f, dotRingPaint)
+            canvas.drawCircle(fx, fy, 20f, dotHaloPaint)
+            canvas.drawCircle(fx, fy, 14f, finishPointPaint)
+            canvas.drawCircle(fx, fy, 14f, dotRingPaint)
+        }
 
         // Photo markers sitting on the route at their time positions.
         val markerPhotos = track.photos.sortedBy { it.timestamp }

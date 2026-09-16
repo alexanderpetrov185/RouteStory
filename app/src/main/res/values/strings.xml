@@ -59,4 +59,6 @@
     <string name="map_no_net">Для отображения карты требуется подключение к интернету</string>
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
     <string name="map_my_location">Моё местоположение</string>
+    <string name="waiting_gps">Ожидание GPS…</string>
+    <string name="action_grant_location">Разрешить геолокацию</string>
 </resources>
