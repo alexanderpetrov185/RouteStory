@@ -28,6 +28,7 @@ import javax.inject.Singleton
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.tan
 
 /**
@@ -48,6 +49,9 @@ class MapSnapshotProvider @Inject constructor(
         const val MAX_TILES = 9
         const val TILE_PX = 256
         const val MAX_ZOOM = 16
+        /** Minimum video window around the track (~1 km): keeps the crop sharp. */
+        private const val MIN_SPAN_LON = 0.012
+        private const val MIN_SPAN_LAT = 0.009
 
         /**
          * Exposes the exact zoom / tile grid / crop rectangle used by [snapshot] so
@@ -61,10 +65,22 @@ class MapSnapshotProvider @Inject constructor(
         fun cropInfo(track: Track, width: Int, height: Int): CropInfo? {
             val points = track.points
             if (points.size < 2) return null
-            val minLat = points.minOf { it.lat }
-            val maxLat = points.maxOf { it.lat }
-            val minLon = points.minOf { it.lon }
-            val maxLon = points.maxOf { it.lon }
+            val rawMinLat = points.minOf { it.lat }
+            val rawMaxLat = points.maxOf { it.lat }
+            val rawMinLon = points.minOf { it.lon }
+            val rawMaxLon = points.maxOf { it.lon }
+            // Sprint 16: guarantee a minimum geo window (~1 km) centred on the track.
+            // A stand-still recording would otherwise crop a couple of pixels and
+            // stretch them over the whole frame (blurry "mush"); this always shows
+            // readable surroundings, like Relive does.
+            val centerLat = (rawMinLat + rawMaxLat) / 2.0
+            val centerLon = (rawMinLon + rawMaxLon) / 2.0
+            val halfLat = max((rawMaxLat - rawMinLat) / 2.0, MIN_SPAN_LAT / 2.0)
+            val halfLon = max((rawMaxLon - rawMinLon) / 2.0, MIN_SPAN_LON / 2.0)
+            val minLat = centerLat - halfLat
+            val maxLat = centerLat + halfLat
+            val minLon = centerLon - halfLon
+            val maxLon = centerLon + halfLon
             val z = pickZoom(minLat, maxLat, minLon, maxLon, width, height)
             val x0 = tileX(minLon, z)
             val x1 = tileX(maxLon, z)
