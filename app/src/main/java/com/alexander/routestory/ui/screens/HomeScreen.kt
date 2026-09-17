@@ -9,19 +9,26 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.alexander.routestory.R
+import com.alexander.routestory.domain.TrackingState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,8 +36,32 @@ fun HomeScreen(
     modifier: Modifier = Modifier,
     onStartTracking: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
-    onOpenPro: () -> Unit = {}
+    onOpenPro: () -> Unit = {},
+    viewModel: HomeViewModel = hiltViewModel()
 ) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Ask about an interrupted ride as soon as the app opens.
+    LaunchedEffect(Unit) { viewModel.checkDraft() }
+
+    if (state.draftAvailable && state.state == TrackingState.IDLE) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text(stringResource(R.string.draft_found_title)) },
+            text = { Text(stringResource(R.string.draft_found_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.resumeDraft()
+                    onStartTracking()
+                }) { Text(stringResource(R.string.action_continue)) }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::discardDraft) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = { TopAppBar(title = { Text(text = stringResource(R.string.app_name)) }) }

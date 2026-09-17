@@ -55,8 +55,8 @@
     <string name="trip_summary">Итоги поездки</string>
     <string name="action_done">Готово</string>
     <string name="track_not_saved">Недостаточно данных для сохранения</string>
-    <string name="map_no_network">Нет сети — карта из кэша</string>
-    <string name="map_no_net">Для отображения карты требуется подключение к интернету</string>
+    <string name="map_no_network">Карта появится при интернете. Маршрут пишется по GPS</string>
+    <string name="map_no_net">Карта появится при интернете. Маршрут пишется по GPS.</string>
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
     <string name="map_my_location">Моё местоположение</string>
     <string name="waiting_gps">Ожидание GPS…</string>
@@ -69,5 +69,16 @@
     <string name="draft_found_title">Незавершённая запись</string>
     <string name="draft_found_text">Приложение было закрыто. Продолжить эту поездку?</string>
     <string name="action_continue">Продолжить</string>
+    <string name="draft_notification_title">Запись прервана</string>
+    <string name="draft_notification_text">Откройте RouteStory, чтобы продолжить запись маршрута</string>
     <string name="photo_error">Не удалось добавить фото</string>
+    <string name="photo_error_camera">Камера не сохранила фото</string>
+    <string name="photo_preview_failed">Не удалось показать фото</string>
+    <string name="action_edit">Изменить</string>
+    <string name="action_watch_video">Смотреть видео</string>
+    <string name="pro_required_edit">Редактирование маршрута доступно в RouteStory Pro</string>
+    <string name="battery_title">Фоновая работа</string>
+    <string name="battery_text">Чтобы запись не прерывалась системой, разрешите RouteStory работу в фоне без ограничений батареи.</string>
+    <string name="action_open_battery_settings">Настройки</string>
+    <string name="action_later">Позже</string>
 </resources>

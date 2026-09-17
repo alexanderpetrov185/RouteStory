@@ -87,7 +87,7 @@ class TrackRecordingService : LifecycleService() {
             ACTION_START -> startRecording()
             ACTION_PAUSE -> pauseRecording()
             ACTION_STOP -> stopRecording()
-            null -> restoreDraft()
+            null -> restoreDraft(resume = true)
             ACTION_FLUSH_DRAFT -> flushDraft()
             ACTION_DISCARD_DRAFT -> {
                 if (stateHolder.uiState.value.state == TrackingState.IDLE) {
@@ -97,7 +97,7 @@ class TrackRecordingService : LifecycleService() {
                     stopSelf()
                 }
             }
-            ACTION_RESTORE_DRAFT -> restoreDraft()
+            ACTION_RESTORE_DRAFT -> restoreDraft(resume = true)
             ACTION_CHECK_DRAFT -> {
                 checkDraft()
                 // Nothing to recover: do not leave a sticky background service behind.
@@ -108,9 +108,38 @@ class TrackRecordingService : LifecycleService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Swipe-away kill: flush the draft synchronously so the ride survives.
+        // Swipe-away kill: flush the draft synchronously so the ride survives, and leave a
+        // plain notification behind explaining how to continue (the foreground-service
+        // notification disappears together with the service).
+        val wasActive = stateHolder.uiState.value.state != TrackingState.IDLE
         flushDraft()
+        if (wasActive && draftStore.hasDraft()) notifyDraftInterrupted()
         super.onTaskRemoved(rootIntent)
+    }
+
+    /** Survives the service: stays in the shade until the user returns to the app. */
+    private fun notifyDraftInterrupted() {
+        runCatching {
+            val intent = Intent(this, com.alexander.routestory.MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            val pending = PendingIntent.getActivity(
+                this, 0, intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            val notification = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_mylocation)
+                .setContentTitle(getString(R.string.draft_notification_title))
+                .setContentText(getString(R.string.draft_notification_text))
+                .setStyle(
+                    androidx.core.app.NotificationCompat.BigTextStyle()
+                        .bigText(getString(R.string.draft_notification_text))
+                )
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .build()
+            androidx.core.app.NotificationManagerCompat.from(this).notify(DRAFT_NOTIFICATION_ID, notification)
+        }.onFailure { android.util.Log.w("TrackService", "draft notification failed", it) }
     }
 
     override fun onDestroy() {
@@ -124,8 +153,8 @@ class TrackRecordingService : LifecycleService() {
         stateHolder.setDraftAvailable(draftStore.hasDraft())
     }
 
-    /** Restores a killed session into PAUSED state; user taps Start to continue. */
-    private fun restoreDraft() {
+    /** Restores a killed session and immediately keeps recording, so one tap resumes. */
+    private fun restoreDraft(resume: Boolean) {
         val draft = draftStore.load() ?: run {
             stateHolder.setDraftAvailable(false)
             return
@@ -154,7 +183,21 @@ class TrackRecordingService : LifecycleService() {
         }
         startForeground()
         updateNotification()
-        android.util.Log.i("TrackService", "draft restored: points=${draft.points.size} photos=${draft.photos.size}")
+        if (resume) {
+            // One-tap continuation: the user picked "Продолжить", so go straight back to
+            // RECORDING instead of leaving the restored ride paused.
+            recording = true
+            lastPointTimeMs = System.currentTimeMillis()
+            startTicker()
+            requestLocationUpdates()
+            stateHolder.update { it.copy(state = TrackingState.RECORDING, speedMps = 0f) }
+            updateNotification()
+        }
+        androidx.core.app.NotificationManagerCompat.from(this).cancel(DRAFT_NOTIFICATION_ID)
+        android.util.Log.i(
+            "TrackService",
+            "draft restored: points=${draft.points.size} photos=${draft.photos.size} resume=$resume"
+        )
     }
     private fun draftSnapshot(): TrackDraft? {
         val st = stateHolder.uiState.value
@@ -236,8 +279,12 @@ class TrackRecordingService : LifecycleService() {
         lifecycleScope.launch {
             // The service is torn down right after saving, so the write must not be cancellable.
             var saveFailed = false
+            // A ride is worth keeping whenever it has either two points (a real line) or
+            // at least a meter of measured distance. "Not enough data" is reserved for
+            // truly empty recordings, not for short ones.
+            val hasUsableData = snapshot.size >= 2 || distance >= 1f
             val trackId = withContext(NonCancellable + Dispatchers.IO) {
-                if (snapshot.isEmpty()) {
+                if (!hasUsableData) {
                     null
                 } else {
                     runCatching {
@@ -466,6 +513,9 @@ class TrackRecordingService : LifecycleService() {
         const val ACTION_CHECK_DRAFT = "com.alexander.routestory.action.CHECK_DRAFT"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1
+
+        /** Plain (non-foreground) notification telling the user the ride was interrupted. */
+        private const val DRAFT_NOTIFICATION_ID = 1001
         /** First fix farther than this from the pre-start position is treated as a teleport. */
         private const val MAX_START_JUMP_M = 150f
         private const val UPDATE_INTERVAL_MS = 2000L

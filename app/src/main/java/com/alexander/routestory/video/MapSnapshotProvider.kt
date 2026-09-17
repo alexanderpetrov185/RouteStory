@@ -206,6 +206,7 @@ class MapSnapshotProvider @Inject constructor(
                 }.awaitAll()
             }
             val missingPaint = Paint().apply { color = Color.rgb(58, 63, 70) }
+            var loaded = 0
             for ((index, entry) in tiles.withIndex()) {
                 if (entry == null) continue
                 val (_, tile) = entry
@@ -216,8 +217,34 @@ class MapSnapshotProvider @Inject constructor(
                 } else {
                     canvas.drawBitmap(tile, dx, dy, null)
                     tile.recycle()
+                    loaded++
                 }
             }
+            // Sprint 22: a mostly-grey satellite mosaic is worse than no satellite.
+            // Fall back to cached/downloaded OSM live tiles (the imagery the user sees on
+            // screen), and if even that fails — let the renderer draw its dark schematic
+            // backdrop; never a plain grey rectangle.
+            var backgroundKind = "sat"
+            if (loaded * 2 < tiles.size) {
+                var liveLoaded = 0
+                for ((index, cell) in cells.withIndex()) {
+                    val (x, y) = cell
+                    val tile = loadLiveTile(zoom, x, y) ?: continue
+                    val dx = ((index % tileCountX) * TILE_PX).toFloat()
+                    val dy = ((index / tileCountX) * TILE_PX).toFloat()
+                    canvas.drawBitmap(tile, dx, dy, null)
+                    tile.recycle()
+                    liveLoaded++
+                }
+                if (liveLoaded * 2 >= tiles.size) {
+                    backgroundKind = "live_cache"
+                } else {
+                    Log.i("MapSnapshot", "snapshot null: sat tiles=$loaded/${tiles.size}, live=$liveLoaded -> schematic")
+                    full.recycle()
+                    return@withContext null
+                }
+            }
+            Log.i("MapSnapshot", "background=$backgroundKind tiles=$loaded/${tiles.size}")
             // Crop exact geo window, then scale once to the video frame.
             val result = runCatching {
                 val cropped = Bitmap.createBitmap(full, crop.leftPx, crop.topPx, crop.cropW, crop.cropH)
@@ -232,6 +259,36 @@ class MapSnapshotProvider @Inject constructor(
     private fun cacheFile(z: Int, x: Int, y: Int): File =
         // Separate namespace from the live-map tiles (different imagery source).
         TileDiskCache.file(context, "sat", z, x, y)
+
+    private fun liveCacheFile(z: Int, x: Int, y: Int): File =
+        TileDiskCache.file(context, "live2", z, x, y)
+
+    /**
+     * OSM fallback backdrop: same tile grid as the satellite request, but the live OSM
+     * imagery (disk cache first, network second). Used when Esri is unreachable so the
+     * video never degrades to a plain grey rectangle.
+     */
+    private fun loadLiveTile(z: Int, x: Int, y: Int): Bitmap? {
+        val file = liveCacheFile(z, x, y)
+        TileDiskCache.load(file)?.let { return it }
+        val bitmap = runCatching {
+            val url = URL("https://tile.openstreetmap.org/$z/$x/$y.png")
+            val connection = url.openConnection() as HttpURLConnection
+            try {
+                connection.connectTimeout = 2_500
+                connection.readTimeout = 2_500
+                connection.setRequestProperty("User-Agent", MapTiles.USER_AGENT)
+                connection.connect()
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) return null
+                val bytes = connection.inputStream.use { it.readBytes() }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } finally {
+                connection.disconnect()
+            }
+        }.getOrNull() ?: return null
+        TileDiskCache.store(file, bitmap)
+        return bitmap
+    }
 
     private fun loadTile(z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(z, x, y)

@@ -16,6 +16,7 @@ import com.alexander.routestory.video.VideoExportUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
@@ -50,7 +52,11 @@ class TrackDetailViewModel @Inject constructor(
     }
 
     fun deleteTrack() {
-        viewModelScope.launch { repository.deleteTrack(trackId) }
+        viewModelScope.launch {
+            repository.deleteTrack(trackId)
+            // The archived video belongs to the deleted ride only.
+            File(context.filesDir, "videos").resolve("track_$trackId.mp4").delete()
+        }
     }
 
     fun addPhotos(uris: List<Uri>) {
@@ -83,6 +89,8 @@ class TrackDetailViewModel @Inject constructor(
                 val file = videoExportUseCase.export(track, limits) { videoStateHolder.setRunning(it) }
             if (file != null) {
                 videoStateHolder.setDone(file)
+                    // Keep a watchable copy; the Done dialog only previews the temp file.
+                    archiveVideo(track.id, file)
                 } else if (videoStateHolder.state.value !is VideoExportState.Idle) {
                     videoStateHolder.setFailed()
                 }
@@ -108,6 +116,21 @@ class TrackDetailViewModel @Inject constructor(
             }
         }
     }
+
+    /** Persists the last export so the ride keeps a watchable copy (viewing is free). */
+    suspend fun archiveVideo(trackId: Long, file: File) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val dir = File(context.filesDir, "videos").apply { mkdirs() }
+                file.copyTo(File(dir, "track_$trackId.mp4"), overwrite = true)
+            }
+        }
+    }
+
+    /** Previously exported video for a ride, or null when none was made yet. */
+    fun archivedVideo(trackId: Long): File? =
+        File(File(context.filesDir, "videos"), "track_$trackId.mp4")
+            .takeIf { it.isFile && it.length() > 0L }
 
     companion object {
         const val ARG_TRACK_ID = "trackId"

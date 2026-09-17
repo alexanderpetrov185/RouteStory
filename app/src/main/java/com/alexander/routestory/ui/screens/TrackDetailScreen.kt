@@ -68,6 +68,7 @@ import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.service.VideoExportState
 import com.alexander.routestory.utils.GeoUtils
 import java.io.File
+import android.content.Context
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,6 +88,9 @@ fun TrackDetailScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var selectedPhoto by remember { mutableStateOf<TrackPhoto?>(null) }
     var showShiftDialog by remember { mutableStateOf(false) }
+    // Sprint 22: the ride screen is view-only by default; editing (photos, re-rendering
+    // the video) is an explicit action, gated to Pro.
+    var editMode by remember { mutableStateOf(false) }
 
     val pickPhotosLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(10)
@@ -166,22 +170,63 @@ fun TrackDetailScreen(
                         PhotoThumb(photo = photo, onClick = { selectedPhoto = photo })
                     }
                 }
-                OutlinedButton(
-                    onClick = {
-                        pickPhotosLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                if (editMode) {
+                    OutlinedButton(
+                        onClick = {
+                            pickPhotosLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.action_add_photo))
+                    }
+                    Button(
+                        onClick = { viewModel.createVideo(current) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = videoState !is VideoExportState.Running
+                    ) {
+                        Text(stringResource(R.string.action_create_video))
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            if (isPro) editMode = true else onOpenPro()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (isPro) stringResource(R.string.action_edit)
+                            else stringResource(R.string.action_edit) + " (Pro)"
                         )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(stringResource(R.string.action_add_photo))
+                    }
                 }
-                Button(
-                    onClick = { viewModel.createVideo(current) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = videoState !is VideoExportState.Running
-                ) {
-                    Text(stringResource(R.string.action_create_video))
+                // Watching an already rendered video is free for everyone.
+                val archivedVideo = remember(current.id, videoState) {
+                    viewModel.archivedVideo(current.id)
+                }
+                if (archivedVideo != null && videoState !is VideoExportState.Done) {
+                    var showVideo by remember(current.id) { mutableStateOf(false) }
+                    OutlinedButton(
+                        onClick = { showVideo = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.action_watch_video))
+                    }
+                    if (showVideo) {
+                        AlertDialog(
+                            onDismissRequest = { showVideo = false },
+                            title = { Text(current.name) },
+                            text = {
+                                SavedVideoPlayer(file = archivedVideo)
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showVideo = false }) {
+                                    Text(stringResource(R.string.action_close))
+                                }
+                            }
+                        )
+                    }
                 }
                 if (!isPro) {
                     Card(
@@ -464,7 +509,31 @@ private fun PhotoThumb(photo: TrackPhoto, onClick: () -> Unit) {
         }
     }
 }
-private fun shareVideo(file: File, context: android.content.Context) {
+@Composable
+private fun SavedVideoPlayer(file: File) {
+    AndroidView(
+        factory = { ctx ->
+            VideoView(ctx).apply {
+                setOnPreparedListener { mp ->
+                    mp.isLooping = true
+                    start()
+                }
+                setOnErrorListener { _, what, extra ->
+                    android.util.Log.w("MapSnapshot", "saved video error what=$what extra=$extra")
+                    true
+                }
+                setVideoURI(android.net.Uri.fromFile(file))
+                setOnClickListener { if (isPlaying) pause() else start() }
+            }
+        },
+        onRelease = { it.stopPlayback() },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(240.dp)
+    )
+}
+
+private fun shareVideo(file: File, context: Context) {
     val uri = FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "video/mp4"

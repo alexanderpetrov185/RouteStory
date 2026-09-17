@@ -711,6 +711,8 @@ private fun RouteMapCanvas(
         if (locateTick > 0) {
             manualCenter = null
             locateFollow = true
+            // Taxi-style strong zoom: street level, regardless of the previous gesture zoom.
+            userZoom = 14f
         }
     }
     val target = if (locateFollow) currentPosition else null
