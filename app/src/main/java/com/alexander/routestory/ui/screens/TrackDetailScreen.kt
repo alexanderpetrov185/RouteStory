@@ -170,6 +170,15 @@ fun TrackDetailScreen(
                         PhotoThumb(photo = photo, onClick = { selectedPhoto = photo })
                     }
                 }
+                // Sprint 23: creating a video is a core action for Free users too — it is
+                // always visible, not hidden behind the Pro-only edit mode.
+                Button(
+                    onClick = { viewModel.createVideo(current) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = videoState !is VideoExportState.Running
+                ) {
+                    Text(stringResource(R.string.action_create_video))
+                }
                 if (editMode) {
                     OutlinedButton(
                         onClick = {
@@ -181,15 +190,10 @@ fun TrackDetailScreen(
                     ) {
                         Text(stringResource(R.string.action_add_photo))
                     }
-                    Button(
-                        onClick = { viewModel.createVideo(current) },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = videoState !is VideoExportState.Running
-                    ) {
-                        Text(stringResource(R.string.action_create_video))
-                    }
                 } else {
-                    Button(
+                    // Pro-only: adding photos / re-rendering is the edit mode; for Free
+                    // users the button leads to the Pro screen instead of hiding video.
+                    OutlinedButton(
                         onClick = {
                             if (isPro) editMode = true else onOpenPro()
                         },
