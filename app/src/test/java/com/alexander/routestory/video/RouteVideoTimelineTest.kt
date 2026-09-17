@@ -34,9 +34,28 @@ class RouteVideoTimelineTest {
     fun `no photos keeps the plain map duration`() {
         val timeline = RouteVideoTimeline(track(), fps = 15, durationSec = 12, maxPhotos = 10)
         assertEquals(0, timeline.photoCount)
-        assertEquals(180, timeline.totalFrames)
+        // 5 s intro + 12 s map + 3 s outro, 15 fps.
+        assertEquals(75 + 180 + 45, timeline.totalFrames)
         assertNull(timeline.photoAt(0))
-        assertNull(timeline.photoAt(179))
+        assertNull(timeline.photoAt(timeline.totalFrames - 1))
+    }
+
+    @Test
+    fun `intro and outro cards are exactly five and three seconds`() {
+        val timeline = RouteVideoTimeline(track(), fps = 15, durationSec = 12, maxPhotos = 10)
+        assertEquals(75, timeline.introFrames)
+        assertEquals(45, timeline.outroFrames)
+        assertTrue(timeline.isIntro(0) && timeline.isIntro(74) && !timeline.isIntro(75))
+        assertTrue(timeline.isOutro(timeline.totalFrames - 1) && !timeline.isOutro(timeline.totalFrames - 46))
+    }
+
+    @Test
+    fun `card fades stay under a quarter second`() {
+        val timeline = RouteVideoTimeline(track(), fps = 15, durationSec = 12, maxPhotos = 10)
+        // 15 fps * 0.25 s = ~4 frames of ramp.
+        assertEquals(1f, timeline.introAlpha(3), 0.01f)
+        assertTrue(timeline.introAlpha(0) < 1f)
+        assertEquals(1f, timeline.outroAlpha(timeline.totalFrames - 1), 0.01f)
     }
 
     @Test
@@ -44,17 +63,17 @@ class RouteVideoTimelineTest {
         val track = track(listOf(photo(55.0, 37.002, 2_000L), photo(55.0, 37.004, 4_000L)))
         val timeline = RouteVideoTimeline(track, fps = 15, durationSec = 12, maxPhotos = 10)
         assertEquals(2, timeline.photoCount)
-        // 180 map frames + 2 pauses of 2.6s at 15 fps.
-        assertEquals(180 + 2 * 39, timeline.totalFrames)
+        // 75 intro + 180 map + 2 pauses of 2.6s at 15 fps + 45 outro.
+        assertEquals(75 + 180 + 2 * 39 + 45, timeline.totalFrames)
     }
 
     @Test
     fun `photo pause happens where the photo sits on the route`() {
         val track = track(listOf(photo(55.0, 37.002, 2_000L)))
         val timeline = RouteVideoTimeline(track, fps = 15, durationSec = 12, maxPhotos = 10)
-        // Half the route => frame 90 is where the pause starts.
+        // Half the route => intro 75 + map frame 90 is where the pause starts.
         val start = (0 until timeline.totalFrames).first { timeline.photoAt(it) != null }
-        assertEquals(90, start)
+        assertEquals(75 + 90, start)
         assertNotNull(timeline.photoAt(start))
         assertNull(timeline.photoAt(start + 39))
     }

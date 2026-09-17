@@ -23,6 +23,8 @@ import javax.inject.Singleton
 /**
  * Encodes an animated route video fully on-device:
  * Canvas frames -> RGBA to YUV420 -> MediaCodec (H.264) -> MediaMuxer (MP4).
+ * A light royalty-free background loop (res/raw/bgm.wav) is AAC-encoded first and
+ * interleaved into the same MP4; any audio failure keeps the silent video.
  */
 @Singleton
 class VideoExportUseCase @Inject constructor(
@@ -56,6 +58,9 @@ class VideoExportUseCase @Inject constructor(
                     "background=${background != null}"
             )
             val encodeStart = android.os.SystemClock.elapsedRealtime()
+            // Sprint 24: encode the light BGM first — it is small (~60 KB AAC), so the
+            // samples fit in memory and can be interleaved into the muxer during video drain.
+            val bgm = encodeBgmAac()
             val renderer = RouteFrameRenderer(limits)
             // The timeline owns frame counting: map animation plus a pause for every photo.
             val timeline = RouteVideoTimeline(track, limits.fps, limits.durationSec, limits.maxPhotos)
@@ -91,11 +96,25 @@ class VideoExportUseCase @Inject constructor(
             val mux = MediaMuxer(dest.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             muxer = mux
             var videoTrack = -1
+            var audioTrack = -1
             var muxerStarted = false
             var eosSent = false
             var eosReceived = false
             var frame = 0
             val info = MediaCodec.BufferInfo()
+            // Interleaving state for the BGM samples.
+            var audioNext = 0
+            fun writeAudioUpTo(ptsUs: Long) {
+                if (bgm == null || audioTrack < 0) return
+                val samples = bgm.samples
+                while (audioNext < samples.size && samples[audioNext].ptsUs <= ptsUs) {
+                    val s = samples[audioNext++]
+                    val out = java.nio.ByteBuffer.wrap(s.data)
+                    val ai = MediaCodec.BufferInfo()
+                    ai.set(0, s.data.size, s.ptsUs, 0)
+                    mux.writeSampleData(audioTrack, out, ai)
+                }
+            }
 
             while (!eosReceived) {
                 if (!currentCoroutineContext().isActive) throw kotlinx.coroutines.CancellationException("Video export cancelled")
@@ -135,6 +154,9 @@ class VideoExportUseCase @Inject constructor(
                 while (outIndex >= 0 || outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED || outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         videoTrack = mux.addTrack(codec.outputFormat)
+                        // Both tracks must be added before start(); audio is fully
+                        // encoded by now, so its format is available.
+                        if (bgm != null) audioTrack = mux.addTrack(bgm.format)
                         mux.start()
                         muxerStarted = true
                     } else if (outIndex >= 0) {
@@ -147,6 +169,8 @@ class VideoExportUseCase @Inject constructor(
                                 encoded.position(info.offset)
                                 encoded.limit(info.offset + info.size)
                                 mux.writeSampleData(videoTrack, encoded, info)
+                                // Interleave BGM by presentation time as the video advances.
+                                writeAudioUpTo(info.presentationTimeUs)
                             }
                         }
                         codec.releaseOutputBuffer(outIndex, false)
@@ -161,6 +185,8 @@ class VideoExportUseCase @Inject constructor(
                 }
             }
 
+            // Video EOS reached: flush the remaining BGM samples so the audio track ends.
+            if (bgm != null && muxerStarted) writeAudioUpTo(Long.MAX_VALUE)
             mux.stop()
             success = true
             Log.i(
@@ -182,6 +208,83 @@ class VideoExportUseCase @Inject constructor(
             if (!success) outFile?.delete()
         }
     }
+
+    /** One AAC sample ready for the muxer. */
+    private class AacSample(val data: ByteArray, val ptsUs: Long)
+
+    private class EncodedAudio(val format: MediaFormat, val samples: List<AacSample>)
+
+    /**
+     * Encodes the bundled royalty-free loop (res/raw/bgm.wav, mono 22050 Hz) to AAC LC.
+     * Runs fully in memory (~60 KB output); any failure returns null and the clip stays
+     * silent instead of failing the whole export.
+     */
+    private fun encodeBgmAac(): EncodedAudio? = runCatching {
+        val raw = context.resources.openRawResource(com.alexander.routestory.R.raw.bgm).use { it.readBytes() }
+        if (raw.size <= 44) return null // header only — treat as "no music"
+        val sampleRate = 22_050
+        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, 48_000)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
+        }
+        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        encoder.start()
+        var outFormat: MediaFormat? = null
+        val samples = ArrayList<AacSample>()
+        val info = MediaCodec.BufferInfo()
+        var offset = 44 // canonical PCM WAV header
+        var samplesFed = 0L
+        var eosSent = false
+        var eosReceived = false
+        while (!eosReceived) {
+            if (!eosSent) {
+                val idx = encoder.dequeueInputBuffer(10_000L)
+                if (idx >= 0) {
+                    val buf = encoder.getInputBuffer(idx)!!
+                    buf.clear()
+                    val size = minOf(8192, raw.size - offset)
+                    if (size <= 0) {
+                        encoder.queueInputBuffer(idx, 0, 0, ptsOf(samplesFed, sampleRate), MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        eosSent = true
+                    } else {
+                        buf.put(raw, offset, size)
+                        encoder.queueInputBuffer(idx, 0, size, ptsOf(samplesFed, sampleRate), 0)
+                        samplesFed += size / 2
+                        offset += size
+                    }
+                }
+            }
+            var out = encoder.dequeueOutputBuffer(info, 10_000L)
+            while (out >= 0 || out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED || out == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    outFormat = encoder.outputFormat
+                } else if (out >= 0) {
+                    if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                        val ob = encoder.getOutputBuffer(out)!!
+                        val data = ByteArray(info.size)
+                        ob.position(info.offset)
+                        ob.get(data)
+                        samples.add(AacSample(data, info.presentationTimeUs))
+                    }
+                    encoder.releaseOutputBuffer(out, false)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        eosReceived = true
+                        break
+                    }
+                } else {
+                    break
+                }
+                out = encoder.dequeueOutputBuffer(info, 0L)
+            }
+        }
+        try { encoder.stop() } catch (_: Exception) {}
+        try { encoder.release() } catch (_: Exception) {}
+        EncodedAudio(outFormat ?: error("audio format not reported"), samples)
+    }.getOrNull()
+
+    private fun ptsOf(sampleIndex: Long, sampleRate: Int): Long = sampleIndex * 1_000_000L / sampleRate
 
     /**
      * RGBA bitmap -> NV12 (semi-planar YUV420) straight into the codec input byte buffer.

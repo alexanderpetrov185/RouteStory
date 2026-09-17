@@ -38,6 +38,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -220,6 +221,7 @@ fun TrackDetailScreen(
                     if (showVideo) {
                         AlertDialog(
                             onDismissRequest = { showVideo = false },
+                            containerColor = MaterialTheme.colorScheme.surface,
                             title = { Text(current.name) },
                             text = {
                                 SavedVideoPlayer(file = archivedVideo)
@@ -383,39 +385,51 @@ fun TrackDetailScreen(
                     viewModel.consumeVideoResult()
                 }
             }
+            var previewEnded by remember(videoResult.file) { mutableStateOf(false) }
+            val videoViewRef = remember(videoResult.file) { mutableStateOf<VideoView?>(null) }
             if (!previewFailed) AlertDialog(
                 onDismissRequest = { viewModel.consumeVideoResult() },
+                containerColor = MaterialTheme.colorScheme.surface,
                 title = { Text(stringResource(R.string.video_done)) },
                 text = {
-                    AndroidView(
-                        factory = { ctx ->
-                            VideoView(ctx).apply {
-                                // Local app file plays directly; start() only after the
-                                // surface is prepared (calling it too early is the usual
-                                // reason a preview stays black).
-                                setOnPreparedListener { mp ->
-                                    previewPrepared = true
-                                    mp.isLooping = true
-                                    start()
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        AndroidView(
+                            factory = { ctx ->
+                                VideoView(ctx).apply {
+                                    videoViewRef.value = this
+                                    // Local app file plays directly; start() only after the
+                                    // surface is prepared (calling it too early is the usual
+                                    // reason a preview stays black).
+                                    setOnPreparedListener { mp ->
+                                        previewPrepared = true
+                                        // Sprint 24: play once; "watch again" restarts.
+                                        mp.isLooping = false
+                                        setOnCompletionListener { previewEnded = true }
+                                        start()
+                                    }
+                                    setOnErrorListener { _, what, extra ->
+                                        android.util.Log.w("MapSnapshot", "preview error what=$what extra=$extra")
+                                        previewFailed = true
+                                        true
+                                    }
+                                    setVideoURI(android.net.Uri.fromFile(videoResult.file))
+                                    // Tap toggles play/pause.
+                                    setOnClickListener {
+                                        if (isPlaying) pause() else start()
+                                    }
                                 }
-                                setOnErrorListener { _, what, extra ->
-                                    android.util.Log.w("MapSnapshot", "preview error what=$what extra=$extra")
-                                    previewFailed = true
-                                    true
-                                }
-                                setVideoURI(android.net.Uri.fromFile(videoResult.file))
-                                // Tap toggles play/pause.
-                                setOnClickListener {
-                                    if (isPlaying) pause() else start()
-                                }
-                            }
-                        },
-                        onReset = null,
-                        onRelease = { it.stopPlayback() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                    )
+                            },
+                            onReset = null,
+                            onRelease = { it.stopPlayback() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp)
+                        )
+                    }
                 },
                 confirmButton = {
                     TextButton(onClick = {
@@ -426,6 +440,14 @@ fun TrackDetailScreen(
                 },
                 dismissButton = {
                     Row {
+                        if (previewEnded) {
+                            TextButton(onClick = {
+                                previewEnded = false
+                                videoViewRef.value?.let { it.seekTo(0); it.start() }
+                            }) {
+                                Text(stringResource(R.string.action_watch_again))
+                            }
+                        }
                         TextButton(onClick = { shareVideo(videoResult.file, context) }) {
                             Text(stringResource(R.string.action_share))
                         }
@@ -519,7 +541,8 @@ private fun SavedVideoPlayer(file: File) {
         factory = { ctx ->
             VideoView(ctx).apply {
                 setOnPreparedListener { mp ->
-                    mp.isLooping = true
+                    // Sprint 24: no looping anywhere; a tap restarts after the end.
+                    mp.isLooping = false
                     start()
                 }
                 setOnErrorListener { _, what, extra ->
@@ -527,7 +550,12 @@ private fun SavedVideoPlayer(file: File) {
                     true
                 }
                 setVideoURI(android.net.Uri.fromFile(file))
-                setOnClickListener { if (isPlaying) pause() else start() }
+                setOnClickListener {
+                    if (isPlaying) pause() else {
+                        if (currentPosition >= duration && duration > 0) seekTo(0)
+                        start()
+                    }
+                }
             }
         },
         onRelease = { it.stopPlayback() },

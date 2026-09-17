@@ -21,11 +21,18 @@ class RouteVideoTimeline(
     durationSec: Int,
     maxPhotos: Int
 ) {
+    private val frameRate = fps
     /** Distance-based mapping used for both the moving marker and photo positions. */
     internal val motion = RouteVideoMotion(track.points)
 
     /** Frames of pure map animation (route always runs through all of them). */
     val baseFrames: Int = (durationSec * fps).coerceAtLeast(2)
+
+    /** Fixed-length intro before the map (title card). */
+    val introFrames: Int = (INTRO_SEC * fps).roundToInt().coerceAtLeast(1)
+
+    /** Fixed-length outro after the map (store line). */
+    val outroFrames: Int = (OUTRO_SEC * fps).roundToInt().coerceAtLeast(1)
 
     /** Frames a single photo stays on screen, including its fades. */
     val holdFrames: Int = (PHOTO_HOLD_SEC * fps).roundToInt().coerceAtLeast(2)
@@ -55,28 +62,51 @@ class RouteVideoTimeline(
     /** Photos that actually get an insert, in route order (markers must match). */
     val inserts: List<TrackPhoto> get() = photos
 
-    val totalFrames: Int get() = baseFrames + photoCount * holdFrames
+    val totalFrames: Int get() = introFrames + baseFrames + photoCount * holdFrames + outroFrames
+
+    /** True while [frame] belongs to the intro title card. */
+    fun isIntro(frame: Int): Boolean = frame < introFrames
+
+    /** True while [frame] belongs to the outro card. */
+    fun isOutro(frame: Int): Boolean = frame >= introFrames + baseFrames + photoCount * holdFrames
 
     /** Route progress (0..1 by distance) the map should show at [frame]. */
     fun mapProgress(frame: Int): Float {
-        val pause = pauseIndexAt(frame)
+        if (isIntro(frame)) return 0f
+        if (isOutro(frame)) return 1f
+        // Frames inside the map part are counted from its own start (after the intro).
+        val mapFrame = frame - introFrames
+        val pause = pauseIndexAt(mapFrame)
         if (pause >= 0) return fractions[pause]
         var holds = 0
-        for (i in pauseStarts.indices) if (frame >= pauseStarts[i] + holdFrames) holds++
-        val anim = (frame - holds * holdFrames).coerceIn(0, baseFrames - 1)
+        for (i in pauseStarts.indices) if (mapFrame >= pauseStarts[i] + holdFrames) holds++
+        val anim = (mapFrame - holds * holdFrames).coerceIn(0, baseFrames - 1)
         return anim / (baseFrames - 1).toFloat()
     }
 
     /** Photo shown full screen at [frame], or null while the map is visible. */
-    fun photoAt(frame: Int): TrackPhoto? = pauseIndexAt(frame).let { if (it >= 0) photos[it] else null }
+    fun photoAt(frame: Int): TrackPhoto? {
+        if (isIntro(frame) || isOutro(frame)) return null
+        return pauseIndexAt(frame - introFrames).let { if (it >= 0) photos[it] else null }
+    }
 
     /** Fade in/out envelope (<= [PHOTO_FADE_SEC]) of the full-screen photo at [frame]. */
     fun photoAlpha(frame: Int): Float {
-        val pause = pauseIndexAt(frame)
+        if (isIntro(frame) || isOutro(frame)) return 0f
+        val pause = pauseIndexAt(frame - introFrames)
         if (pause < 0) return 0f
-        val local = frame - pauseStarts[pause]
+        val local = frame - introFrames - pauseStarts[pause]
         return (min(local + 1, holdFrames - local).toFloat() / fadeFrames).coerceIn(0f, 1f)
     }
+
+    /** Fade-in of the intro card (<= CARD_FADE_SEC); reaches 1.0 quickly and stays. */
+    fun introAlpha(frame: Int): Float =
+        ((frame + 1).toFloat() / (CARD_FADE_SEC * frameRate).roundToInt().coerceAtLeast(1)).coerceIn(0f, 1f)
+
+    /** Fade-in of the outro card (<= CARD_FADE_SEC). */
+    fun outroAlpha(frame: Int): Float =
+        ((frame - (totalFrames - outroFrames) + 1).toFloat() /
+            (CARD_FADE_SEC * frameRate).roundToInt().coerceAtLeast(1)).coerceIn(0f, 1f)
 
     /** Index of the point the marker sits on at [frame]; for logging and tests. */
     fun pointIndex(progress: Float): Int = motion.position(progress).toInt().coerceAtLeast(0)
@@ -111,5 +141,10 @@ class RouteVideoTimeline(
         const val PHOTO_HOLD_SEC = 2.6f
         /** Fade in/out envelope. 0.2 s keeps it snappy (3 frames at 15 fps, 6 at 30 fps). */
         const val PHOTO_FADE_SEC = 0.2f
+        /** Fixed title-card durations (Sprint 24). */
+        const val INTRO_SEC = 5f
+        const val OUTRO_SEC = 3f
+        /** Card fade-in cap: every intro/outro effect stays under a quarter second. */
+        const val CARD_FADE_SEC = 0.25f
     }
 }

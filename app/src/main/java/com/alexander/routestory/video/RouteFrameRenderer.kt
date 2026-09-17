@@ -82,6 +82,32 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     /** Solid wash behind a full-screen photo so the map does not bleed through the fades. */
     private val photoBackdropPaint = Paint().apply { color = Color.BLACK }
 
+    /** Sprint 24: intro/outro card typography and heavy dim over the backdrop. */
+    private val cardDimPaint = Paint().apply { color = Color.argb(200, 10, 14, 20) }
+    private val appNamePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 64f
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textAlign = Paint.Align.LEFT
+    }
+    private val introRidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(235, 255, 255, 255)
+        textSize = 40f
+    }
+    private val introStatsPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(210, 255, 255, 255)
+        textSize = 32f
+    }
+    private val outroStorePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 200, 210, 220)
+        textSize = 30f
+    }
+
+    private companion object {
+        /** Brand line shown on the intro and outro cards. */
+        const val APP_NAME = "RouteStory"
+    }
+
     /** Source bitmap the cached brightened copy was built from. */
     private var brightenedSource: Bitmap? = null
     private var brightened: Bitmap? = null
@@ -205,6 +231,15 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val tl = timeline ?: timelineFor(track, frameCount)
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
+        // Sprint 24: fixed intro / outro cards around the map part.
+        if (tl.isIntro(frame)) {
+            drawIntro(track, tl, frame, canvas, w, h, background)
+            return
+        }
+        if (tl.isOutro(frame)) {
+            drawOutro(tl, frame, canvas, w, h)
+            return
+        }
         if (background != null) {
             val bright = brightenOnce(background)
             val src = android.graphics.Rect(0, 0, bright.width, bright.height)
@@ -393,12 +428,52 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         drawTexts(track, canvas, w, h)
     }
 
+    /** Intro card: dark/sat-dimmed backdrop + app name, ride name, one stats line. */
+    private fun drawIntro(
+        track: Track,
+        tl: RouteVideoTimeline,
+        frame: Int,
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        background: Bitmap?
+    ) {
+        if (background != null) {
+            canvas.drawBitmap(
+                brightenOnce(background), null,
+                android.graphics.RectF(0f, 0f, w, h), null
+            )
+            canvas.drawRect(0f, 0f, w, h, cardDimPaint)
+        } else {
+            canvas.drawRect(0f, 0f, w, h, bgPaint)
+        }
+        val alpha = (tl.introAlpha(frame) * 255).toInt()
+        appNamePaint.alpha = alpha
+        introRidePaint.alpha = alpha
+        introStatsPaint.alpha = alpha
+        val cy = h / 2f
+        canvas.drawText(APP_NAME, w / 2f - appNamePaint.measureText(APP_NAME) / 2f, cy - 46f, appNamePaint)
+        val ride = track.name
+        canvas.drawText(ride, w / 2f - introRidePaint.measureText(ride) / 2f, cy + 22f, introRidePaint)
+        val avgSpeed = if (track.duration > 0) track.distance / (track.duration / 1000f) else 0f
+        val stats = GeoUtils.formatDistance(track.distance) + "  ·  " +
+            GeoUtils.formatDuration(track.duration) + "  ·  " + GeoUtils.formatSpeed(avgSpeed)
+        canvas.drawText(stats, w / 2f - introStatsPaint.measureText(stats) / 2f, cy + 82f, introStatsPaint)
+    }
+
+    /** Outro card: app name + store line, fade-in capped at CARD_FADE_SEC. */
+    private fun drawOutro(tl: RouteVideoTimeline, frame: Int, canvas: Canvas, w: Float, h: Float) {
+        canvas.drawRect(0f, 0f, w, h, bgPaint)
+        val alpha = (tl.outroAlpha(frame) * 255).toInt()
+        appNamePaint.alpha = alpha
+        outroStorePaint.alpha = alpha
+        canvas.drawText(APP_NAME, w / 2f - appNamePaint.measureText(APP_NAME) / 2f, h / 2f + 12f, appNamePaint)
+        val store = "Available on Google Play"
+        canvas.drawText(store, w / 2f - outroStorePaint.measureText(store) / 2f, h / 2f + 78f, outroStorePaint)
+    }
+
+    /** Watermark only during the map part: no stats or long captions over the moving route. */
     private fun drawTexts(track: Track, canvas: Canvas, w: Float, h: Float) {
-        canvas.drawText(track.name, 28f, 64f, titlePaint)
-        canvas.drawText(
-            GeoUtils.formatDistance(track.distance) + ", " + GeoUtils.formatDuration(track.duration),
-            28f, h - 74f, statsPaint
-        )
         limits.watermark?.let { wm ->
             canvas.drawText(wm, w - 28f - watermarkPaint.measureText(wm), h - 28f, watermarkPaint)
         }

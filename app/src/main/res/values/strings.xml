@@ -76,6 +76,7 @@
     <string name="photo_preview_failed">Не удалось показать фото</string>
     <string name="action_edit">Изменить</string>
     <string name="action_watch_video">Смотреть видео</string>
+    <string name="action_watch_again">Смотреть снова</string>
     <string name="pro_required_edit">Редактирование маршрута доступно в RouteStory Pro</string>
     <string name="battery_title">Фоновая работа</string>
     <string name="battery_text">Чтобы запись не прерывалась системой, разрешите RouteStory работу в фоне без ограничений батареи.</string>
