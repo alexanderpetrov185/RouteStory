@@ -57,7 +57,9 @@ class VideoExportUseCase @Inject constructor(
             )
             val encodeStart = android.os.SystemClock.elapsedRealtime()
             val renderer = RouteFrameRenderer(limits)
-            val frameCount = limits.durationSec * limits.fps
+            // The timeline owns frame counting: map animation plus a pause for every photo.
+            val timeline = RouteVideoTimeline(track, limits.fps, limits.durationSec, limits.maxPhotos)
+            val frameCount = timeline.totalFrames
             // One reusable frame bitmap: no per-frame allocations on weak devices.
             val bitmap = Bitmap.createBitmap(limits.width, limits.height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
@@ -104,13 +106,13 @@ class VideoExportUseCase @Inject constructor(
                         val queued = run {
                             val image = codec.getInputImage(inIndex)
                             if (image != null) {
-                                renderer.render(track, frame, frameCount, canvas, background)
+                                renderer.render(track, frame, frameCount, canvas, background, timeline)
                                 copyBitmapToImage(bitmap, image, yRow, uvRow)
                                 true
                             } else {
                                 val inBuf = codec.getInputBuffer(inIndex)
                                 if (inBuf != null) {
-                                    renderer.render(track, frame, frameCount, canvas, background)
+                                    renderer.render(track, frame, frameCount, canvas, background, timeline)
                                     inBuf.clear()
                                     copyBitmapToNv12(bitmap, inBuf, yRow)
                                     true

@@ -26,6 +26,10 @@ class TrackingStateHolder @Inject constructor() {
 
     fun update(transform: (TrackingUiState) -> TrackingUiState) = _uiState.update(transform)
 
+    fun setDraftAvailable(available: Boolean) {
+        _uiState.update { it.copy(draftAvailable = available) }
+    }
+
     fun reset() {
         _uiState.value = TrackingUiState()
     }

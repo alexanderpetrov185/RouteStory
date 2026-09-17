@@ -9,12 +9,15 @@ import android.provider.Settings
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,16 +27,23 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material3.Icon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -47,6 +57,8 @@ import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackingState
 import com.alexander.routestory.service.TrackSaveOutcome
 import com.alexander.routestory.utils.GeoUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,6 +73,21 @@ fun TrackingScreen(
     var hasPermissions by remember { mutableStateOf(false) }
     var gpsEnabled by remember { mutableStateOf(true) }
     var locateTick by remember { mutableStateOf(0) }
+
+    // Camera: TakePicture writes into a FileProvider file prepared by the ViewModel.
+    var pendingUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        viewModel.captureResult(ok)
+        pendingUri = null
+    }
+    LaunchedEffect(Unit) {
+        viewModel.photoErrors.collect {
+            snackbarHostState.showSnackbar(context.getString(R.string.photo_error))
+        }
+    }
+
+    // A session killed by the OS leaves a draft on disk; ask whether to continue it.
+    LaunchedEffect(Unit) { viewModel.checkDraft() }
 
     LaunchedEffect(Unit) {
         gpsEnabled = isGpsEnabled(context)
@@ -145,6 +172,7 @@ fun TrackingScreen(
             }
             RouteMapPlaceholder(
                 points = state.points,
+                photoPositions = photoPositionsOf(state.points, state.photos),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -164,6 +192,9 @@ fun TrackingScreen(
                 StatItem(stringResource(R.string.stat_time), GeoUtils.formatDuration(state.durationMs))
                 StatItem(stringResource(R.string.stat_speed), GeoUtils.formatSpeed(state.speedMps))
             }
+            val photoCounter = if (viewModel.photoLimit == Int.MAX_VALUE) "${state.photos.size}"
+            else "${state.photos.size}/${viewModel.photoLimit}"
+            val photoLabel = stringResource(R.string.photo_action) + " · " + photoCounter
             when (state.state) {
                 TrackingState.IDLE -> {
                     // Recording needs a current fix: without it the first accepted point
@@ -193,7 +224,26 @@ fun TrackingScreen(
                     OutlinedButton(onClick = viewModel::pause, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.action_pause))
                     }
-                    Button(onClick = viewModel::stop, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = {
+                            if (state.capturePending) return@OutlinedButton
+                            val uri = viewModel.preparePhoto()
+                            if (uri != null) {
+                                pendingUri = uri
+                                cameraLauncher.launch(uri)
+                            }
+                        },
+                        enabled = !state.capturePending,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                        Text("  " + photoLabel)
+                    }
+                    Button(
+                        onClick = viewModel::stop,
+                        enabled = !state.capturePending && pendingUri == null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(stringResource(R.string.action_stop))
                     }
                 }
@@ -201,14 +251,126 @@ fun TrackingScreen(
                     Button(onClick = viewModel::resume, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.action_resume))
                     }
-                    OutlinedButton(onClick = viewModel::stop, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = {
+                            if (state.capturePending) return@OutlinedButton
+                            val uri = viewModel.preparePhoto()
+                            if (uri != null) {
+                                pendingUri = uri
+                                cameraLauncher.launch(uri)
+                            }
+                        },
+                        enabled = !state.capturePending,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                        Text("  " + photoLabel)
+                    }
+                    OutlinedButton(
+                        onClick = viewModel::stop,
+                        enabled = !state.capturePending && pendingUri == null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(stringResource(R.string.action_stop))
                     }
                 }
             }
         }
     }
+
+    if (state.draftAvailable && state.state == TrackingState.IDLE) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text(stringResource(R.string.draft_found_title)) },
+            text = { Text(stringResource(R.string.draft_found_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.restoreDraft()
+                    locateTick++
+                }) { Text(stringResource(R.string.action_continue)) }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::discardDraft) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
+    // Post-capture review: the systematic camera preview is black on many devices, so the
+    // shot is reviewed in an in-app Material3 dialog instead.
+    val previewPath by viewModel.photoPreview.collectAsStateWithLifecycle()
+    previewPath?.let { path ->
+        PostCaptureDialog(
+            path = path,
+            count = state.photos.size + 1,
+            onAdd = { viewModel.finishPhoto(true) },
+            onRetake = {
+                val uri = viewModel.retakePhoto()
+                if (uri != null) {
+                    pendingUri = uri
+                    cameraLauncher.launch(uri)
+                }
+            },
+            onCancel = { viewModel.finishPhoto(false) }
+        )
+    }
 }
+
+@Composable
+private fun PostCaptureDialog(
+    path: String,
+    count: Int,
+    onAdd: () -> Unit,
+    onRetake: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val bitmap by produceState<android.graphics.Bitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) { decodeSampled(path, 720) }
+    }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text(stringResource(R.string.photo_preview_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val bmp = bitmap
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(240.dp)
+                    )
+                }
+                Text(stringResource(R.string.photo_preview_hint, count))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onAdd) { Text(stringResource(R.string.action_add)) }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onRetake) { Text(stringResource(R.string.action_retake)) }
+                TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) }
+            }
+        }
+    )
+}
+
+/** Down-sampled decode: a full-size camera frame would be tens of MB in the dialog. */
+private fun decodeSampled(path: String, maxSize: Int): android.graphics.Bitmap? = runCatching {
+    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / sample > maxSize || bounds.outHeight / sample > maxSize) sample *= 2
+    android.graphics.BitmapFactory.decodeFile(
+        path,
+        android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+    )
+}.getOrNull()
 
 @Composable
 private fun StatItem(label: String, value: String) {

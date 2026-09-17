@@ -807,10 +807,13 @@ private fun RouteMapCanvas(
             drawPath(path, color = Color(0xFF2196F3), style = Stroke(width = 7f))
         }
         photoPositions.forEach { position ->
-            val offset = project(position.first, position.second, size.width, size.height)
-            drawCircle(markerColor, radius = 14f, center = offset)
-            drawCircle(androidx.compose.ui.graphics.Color.White, radius = 5f, center = offset)
-        }
+                    val offset = project(position.first, position.second, size.width, size.height)
+                    // Bright pin: dark halo + amber disc + white core, readable on any tile.
+                    drawCircle(Color(0x99000000), radius = 17f, center = offset)
+                    drawCircle(markerColor, radius = 14f, center = offset)
+                    drawCircle(Color(0xFFFFC107), radius = 8f, center = offset)
+                    drawCircle(androidx.compose.ui.graphics.Color.White, radius = 4f, center = offset)
+                }
         // Live GPS fix: bright blue, larger, with a white ring and a subtle pulse so it
         // reads as "current position" on any backdrop.
         if (currentPosition != null) {

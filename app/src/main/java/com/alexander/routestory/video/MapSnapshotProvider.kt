@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.util.Log
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.utils.MapTiles
+import com.alexander.routestory.utils.TileDiskCache
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -20,7 +21,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
@@ -231,18 +231,13 @@ class MapSnapshotProvider @Inject constructor(
 
     private fun cacheFile(z: Int, x: Int, y: Int): File =
         // Separate namespace from the live-map tiles (different imagery source).
-        File(context.filesDir, "map_tiles/sat/$z/$x/$y.png")
+        TileDiskCache.file(context, "sat", z, x, y)
 
     private fun loadTile(z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(z, x, y)
-        if (file.exists()) {
-            BitmapFactory.decodeFile(file.absolutePath)?.let { return it }
-        }
+        TileDiskCache.load(file)?.let { return it }
         val bitmap = downloadTile(z, x, y) ?: return null
-        runCatching {
-            file.parentFile?.mkdirs()
-            FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
-        }
+        TileDiskCache.store(file, bitmap)
         return bitmap
     }
 

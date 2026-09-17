@@ -15,7 +15,6 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.cos
@@ -168,18 +167,13 @@ object OsmTileLayer {
     private fun cacheFile(context: Context, z: Int, x: Int, y: Int): File =
         // v2: bump after the "API KEY REQUIRED" Carto placeholder tiles may have been
         // cached by older builds, so they can never be served again.
-        File(context.filesDir, "map_tiles/live2/$z/$x/$y.png")
+        TileDiskCache.file(context, "live2", z, x, y)
 
     private fun loadTile(context: Context, z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(context, z, x, y)
-        if (file.exists()) {
-            BitmapFactory.decodeFile(file.absolutePath)?.let { return it }
-        }
+        TileDiskCache.load(file)?.let { return it }
         val bitmap = downloadTile(z, x, y) ?: return null
-        runCatching {
-            file.parentFile?.mkdirs()
-            FileOutputStream(file).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
-        }
+        TileDiskCache.store(file, bitmap)
         return bitmap
     }
 

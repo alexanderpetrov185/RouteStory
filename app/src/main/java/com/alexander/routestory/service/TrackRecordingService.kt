@@ -44,8 +44,11 @@ class TrackRecordingService : LifecycleService() {
 
     @Inject lateinit var stateHolder: TrackingStateHolder
     @Inject lateinit var repository: TrackRepository
+    @Inject lateinit var draftStore: TrackDraftStore
     @Inject lateinit var locationClient: FusedLocationProviderClient
 
+    private var saving = false
+    private var draftJob: Job? = null
     private val points = mutableListOf<TrackPoint>()
     private var trackName = ""
     private var startTime = 0L
@@ -55,6 +58,8 @@ class TrackRecordingService : LifecycleService() {
     private var lastSpeedMps = 0f
     private var lastPointTimeMs = 0L
     private var tickJob: Job? = null
+    /** Throttled periodic draft save so a kill loses at most a few seconds. */
+    private var lastDraftSaveMs = 0L
 
     /**
      * Position known right before Start (usually the lastFix shown on the map). The first
@@ -82,8 +87,86 @@ class TrackRecordingService : LifecycleService() {
             ACTION_START -> startRecording()
             ACTION_PAUSE -> pauseRecording()
             ACTION_STOP -> stopRecording()
+            null -> restoreDraft()
+            ACTION_FLUSH_DRAFT -> flushDraft()
+            ACTION_DISCARD_DRAFT -> {
+                if (stateHolder.uiState.value.state == TrackingState.IDLE) {
+                    draftStore.load()?.photos?.forEach { java.io.File(it.uri).delete() }
+                    draftStore.clear()
+                    stateHolder.setDraftAvailable(false)
+                    stopSelf()
+                }
+            }
+            ACTION_RESTORE_DRAFT -> restoreDraft()
+            ACTION_CHECK_DRAFT -> {
+                checkDraft()
+                // Nothing to recover: do not leave a sticky background service behind.
+                if (!stateHolder.uiState.value.draftAvailable) stopSelf()
+            }
         }
-        return START_NOT_STICKY
+        return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swipe-away kill: flush the draft synchronously so the ride survives.
+        flushDraft()
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        flushDraft()
+        super.onDestroy()
+    }
+
+    /** Publishes whether a recoverable draft exists (called when the app opens). */
+    private fun checkDraft() {
+        if (stateHolder.uiState.value.state != TrackingState.IDLE) return
+        stateHolder.setDraftAvailable(draftStore.hasDraft())
+    }
+
+    /** Restores a killed session into PAUSED state; user taps Start to continue. */
+    private fun restoreDraft() {
+        val draft = draftStore.load() ?: run {
+            stateHolder.setDraftAvailable(false)
+            return
+        }
+        if (stateHolder.uiState.value.state != TrackingState.IDLE) return
+        points.clear()
+        points.addAll(draft.points)
+        startTime = draft.startTimeMs
+        accumulatedMs = draft.accumulatedMs
+        totalDistanceM = draft.totalDistanceM
+        trackName = draft.trackName
+        segmentStartMs = System.currentTimeMillis()
+        startAnchor = draft.points.lastOrNull()?.let { it.lat to it.lon }
+        stateHolder.update {
+            it.copy(
+                state = TrackingState.PAUSED,
+                sessionId = draft.sessionId,
+                photos = draft.photos,
+                capturePending = false,
+                points = draft.points.toList(),
+                distanceMeters = draft.totalDistanceM,
+                durationMs = draft.accumulatedMs,
+                speedMps = 0f,
+                draftAvailable = false
+            )
+        }
+        startForeground()
+        updateNotification()
+        android.util.Log.i("TrackService", "draft restored: points=${draft.points.size} photos=${draft.photos.size}")
+    }
+    private fun draftSnapshot(): TrackDraft? {
+        val st = stateHolder.uiState.value
+        if (st.state == TrackingState.IDLE || st.sessionId.isEmpty()) return null
+        val now = System.currentTimeMillis()
+        return TrackDraft(st.sessionId, trackName, startTime,
+            accumulatedMs + if (recording) now - segmentStartMs else 0L,
+            totalDistanceM, st.state, points.toList(), st.photos.toList(), now)
+    }
+
+    private fun flushDraft() {
+        draftSnapshot()?.let(draftStore::save)
     }
 
     private fun startRecording() {
@@ -93,6 +176,7 @@ class TrackRecordingService : LifecycleService() {
         val now = System.currentTimeMillis()
         if (currentState == TrackingState.IDLE) {
             points.clear()
+            stateHolder.update { it.copy(sessionId = java.util.UUID.randomUUID().toString(), photos = emptyList(), capturePending = false) }
             totalDistanceM = 0f
             lastSpeedMps = 0f
             accumulatedMs = 0L
@@ -123,10 +207,15 @@ class TrackRecordingService : LifecycleService() {
         stateHolder.update {
             it.copy(state = TrackingState.PAUSED, durationMs = accumulatedMs, speedMps = 0f)
         }
+        // Persist immediately: while paused the ticker is stopped, so a kill would
+        // otherwise fall back to the previous periodic snapshot.
+        saveDraftAsync(force = true)
         updateNotification()
     }
 
     private fun stopRecording() {
+        if (stateHolder.uiState.value.capturePending) return
+        val photos = stateHolder.uiState.value.photos.toList()
         if (recording) {
             accumulatedMs += System.currentTimeMillis() - segmentStartMs
             recording = false
@@ -146,6 +235,7 @@ class TrackRecordingService : LifecycleService() {
         stateHolder.reset()
         lifecycleScope.launch {
             // The service is torn down right after saving, so the write must not be cancellable.
+            var saveFailed = false
             val trackId = withContext(NonCancellable + Dispatchers.IO) {
                 if (snapshot.isEmpty()) {
                     null
@@ -158,13 +248,23 @@ class TrackRecordingService : LifecycleService() {
                                 endTime = end,
                                 distance = distance,
                                 duration = duration,
-                                points = snapshot
+                                points = snapshot,
+                                photos = photos
                             )
                         )
-                    }.getOrNull()
+                    }.onFailure { saveFailed = true }.getOrNull()
                 }
             }
+            if (trackId == null && !saveFailed) photos.forEach { java.io.File(it.uri).delete() }
             if (trackId != null) stateHolder.notifySaved(trackId) else stateHolder.notifyDiscarded()
+            // A failed write keeps the draft: the ride can still be recovered instead of
+            // being silently lost together with the process.
+            if (!saveFailed) {
+                draftStore.clear()
+                stateHolder.setDraftAvailable(false)
+            } else {
+                flushDraft()
+            }
             ServiceCompat.stopForeground(this@TrackRecordingService, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -204,7 +304,12 @@ class TrackRecordingService : LifecycleService() {
             previous?.let { totalDistanceM += GeoUtils.distanceMeters(it, candidate) }
         }
         points.add(candidate)
+        // Every N-th accepted point also refreshes the draft: the ticker alone can miss
+        // a burst of fast fixes right before the process is killed.
+        if (points.size % DRAFT_POINT_STEP == 0) saveDraftAsync()
         lastPointTimeMs = System.currentTimeMillis()
+        // Draft every 10th accepted point as well, so fast movement is covered too.
+        if (points.size % 10 == 0) saveDraftAsync()
         // GPS drift filter: when the user is essentially stationary (last point
         // is less than STATIONARY_DISTANCE_M from the new fix), the GPS "speed"
         // field is unreliable noise — freeze the speed display at 0 instead of
@@ -249,11 +354,26 @@ class TrackRecordingService : LifecycleService() {
     private fun startTicker() {
         stopTicker()
         tickJob = lifecycleScope.launch {
+            var tick = 0
             while (isActive) {
                 delay(TICK_MS)
-                if (recording) pushLiveState()
+                tick++
+                if (recording) {
+                    pushLiveState()
+                    // Periodic draft save (~10s): a kill loses at most a few seconds.
+                    if (tick % 20 == 0) saveDraftAsync()
+                }
             }
         }
+    }
+
+    /** Throttled async draft write (at most once per 5s unless [force]). */
+    private fun saveDraftAsync(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastDraftSaveMs < 5_000L) return
+        lastDraftSaveMs = now
+        val snapshot = draftSnapshot() ?: return
+        lifecycleScope.launch(Dispatchers.IO) { draftStore.save(snapshot) }
     }
 
     private fun stopTicker() {
@@ -340,6 +460,10 @@ class TrackRecordingService : LifecycleService() {
         const val ACTION_START = "com.alexander.routestory.action.START"
         const val ACTION_PAUSE = "com.alexander.routestory.action.PAUSE"
         const val ACTION_STOP = "com.alexander.routestory.action.STOP"
+        const val ACTION_DISCARD_DRAFT = "com.alexander.routestory.action.DISCARD_DRAFT"
+        const val ACTION_RESTORE_DRAFT = "com.alexander.routestory.action.RESTORE_DRAFT"
+        const val ACTION_FLUSH_DRAFT = "com.alexander.routestory.action.FLUSH_DRAFT"
+        const val ACTION_CHECK_DRAFT = "com.alexander.routestory.action.CHECK_DRAFT"
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1
         /** First fix farther than this from the pre-start position is treated as a teleport. */
@@ -348,6 +472,8 @@ class TrackRecordingService : LifecycleService() {
         private const val TICK_MS = 500L
         /** After this long without an accepted fix the displayed speed drops to zero. */
         private const val SPEED_STALE_MS = 10_000L
+        /** Accepted points between two draft writes. */
+        private const val DRAFT_POINT_STEP = 10
         /** Distance below which a new GPS fix is considered "standing still" for speed display. */
         private const val STATIONARY_DISTANCE_M = 5f
     }

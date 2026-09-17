@@ -79,6 +79,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         typeface = Typeface.DEFAULT_BOLD
     }
     private val photoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    /** Solid wash behind a full-screen photo so the map does not bleed through the fades. */
+    private val photoBackdropPaint = Paint().apply { color = Color.BLACK }
 
     /** Source bitmap the cached brightened copy was built from. */
     private var brightenedSource: Bitmap? = null
@@ -177,10 +179,30 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private fun cropInfo(track: Track, w: Int, h: Int): MapSnapshotProvider.CropInfo? =
         MapSnapshotProvider.cropInfo(track, w, h)
 
-    private var motionTrack: Track? = null
-    private var motion: RouteVideoMotion? = null
+    private var cachedTimelineTrack: Track? = null
+    private var cachedTimelineFrameCount = -1
+    private var cachedTimeline: RouteVideoTimeline? = null
 
-    fun render(track: Track, frame: Int, frameCount: Int, canvas: Canvas, background: Bitmap? = null) {
+    /** Timeline is rebuilt only when a different track arrives, never per frame. */
+    private fun timelineFor(track: Track, frameCount: Int): RouteVideoTimeline {
+        val cached = cachedTimeline
+        if (cached != null && cachedTimelineTrack === track && cachedTimelineFrameCount == frameCount) return cached
+        val built = RouteVideoTimeline(track, limits.fps, limits.durationSec, limits.maxPhotos)
+        cachedTimelineTrack = track
+        cachedTimelineFrameCount = frameCount
+        cachedTimeline = built
+        return built
+    }
+
+    fun render(
+        track: Track,
+        frame: Int,
+        frameCount: Int,
+        canvas: Canvas,
+        background: Bitmap? = null,
+        timeline: RouteVideoTimeline? = null
+    ) {
+        val tl = timeline ?: timelineFor(track, frameCount)
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
         if (background != null) {
@@ -233,14 +255,10 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             return x to y
         }
 
-        val progress = RouteVideoMotion.progress(frame, frameCount)
-        val trackTime = track.startTime + ((track.endTime - track.startTime) * progress).toLong()
-        if (motionTrack !== track) {
-            motionTrack = track
-            motion = RouteVideoMotion(track.points)
-        }
+        val progress = tl.mapProgress(frame)
+        val motion = tl.motion
         val n = track.points.size
-        val pos = motion!!.position(progress)
+        val pos = motion.position(progress)
         val index = floor(pos).toInt().coerceIn(0, n - 2)
         val frac = (pos - index).coerceIn(0f, 1f)
         val cur = track.points[index]
@@ -269,7 +287,11 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             canvas.drawRect(0f, 0f, w, h, dimPaint)
         }
         if (frame % limits.fps == 0 || frame == frameCount - 1) {
-            android.util.Log.i("MapSnapshot", "videoCam z=${mercator?.zoom ?: 0} phase=${if (blend == 0f) "overview" else "follow"} pointIndex=$index zoom=$cameraZoom")
+            android.util.Log.i(
+                "MapSnapshot",
+                "videoCam z=${mercator?.zoom ?: 0} phase=${if (blend == 0f) "overview" else "follow"} " +
+                    "pointIndex=${tl.pointIndex(progress)} zoom=$cameraZoom photo=${tl.photoAt(frame)?.let { "yes" } ?: "no"}"
+            )
         }
 
         // Full route underlay (always drawn, even for a two-point track).
@@ -283,7 +305,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         canvas.drawPath(fullPath, fullAccentPaint)
 
         // Bright trail: last 15% of route distance, not GPS sample count.
-        val tailFrom = motion!!.position((progress - 0.15f).coerceAtLeast(0f))
+        val tailFrom = motion.position((progress - 0.15f).coerceAtLeast(0f))
         val tailIndex = floor(tailFrom).toInt().coerceIn(0, index)
         val tailFrac = (tailFrom - tailIndex).coerceIn(0f, 1f)
         val tailBase = track.points[tailIndex]
@@ -316,42 +338,24 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             canvas.drawCircle(fx, fy, 14f, dotRingPaint)
         }
 
-        // Photo markers sitting on the route at their time positions.
-        val markerPhotos = track.photos.sortedBy { it.timestamp }
-        for (photo in markerPhotos) {
+        // Photo markers sitting on the route at their time positions. Only the photos that
+        // really get a full-screen insert are pinned, so the map never promises more than
+        // the clip delivers.
+        for (photo in tl.inserts) {
             val pos = photo.latitude?.let { lat ->
                 photo.longitude?.let { lon -> lat to lon }
             } ?: GeoUtils.interpolateByTime(track.points, photo.timestamp)
             if (pos != null) {
                 val (mx, my) = project(pos.first, pos.second)
-                canvas.drawCircle(mx, my, 10f, dotRingPaint)
-                canvas.drawCircle(mx, my, 10f, photoDotPaint)
-                canvas.drawCircle(mx, my, 4f, dotRingPaint)
+                canvas.drawCircle(mx, my, 16f, dotHaloPaint)
+                canvas.drawCircle(mx, my, 11f, photoDotPaint)
+                canvas.drawCircle(mx, my, 11f, dotRingPaint)
+                canvas.drawCircle(mx, my, 4f, dotHaloPaint)
             }
         }
 
-        // Current position marker is drawn LAST (after photo overlays) so it is always
-        // on top of the route, markers and photos.
-
-        // Photo overlays with fade in/out (about 0.6 s at the video timeline)
-        val fadeFrames = (limits.fps * 0.6f).toInt().coerceAtLeast(1)
-        val photos = track.photos.sortedBy { kotlin.math.abs(it.timestamp - trackTime) }.take(limits.maxPhotos)
-        for (photo in photos) {
-            val photoProgress =
-                ((photo.timestamp - track.startTime).toFloat() / (track.endTime - track.startTime).coerceAtLeast(1)).coerceIn(0f, 1f)
-            val photoFrame = photoProgress * frameCount
-            val distance = frame - photoFrame
-            if (distance < -fadeFrames || distance > fadeFrames) continue
-            val alpha = (1f - kotlin.math.abs(distance) / fadeFrames).coerceIn(0f, 1f)
-            val bitmap = decodePhoto(photo.uri, 720)
-            if (bitmap != null) {
-                photoPaint.alpha = (alpha * 255).toInt()
-                val targetH = h * 0.55f
-                val scale = targetH / bitmap.height
-                val drawW = bitmap.width * scale
-                canvas.drawBitmap(bitmap, (w - drawW) / 2f, (h - targetH) / 2f, photoPaint)
-            }
-        }
+        // Current position marker is drawn LAST (after route, markers and photos) so it is
+        // always on top of the route and the photo pins.
 
         // Moving "me" marker: dark halo + bright centre + white ring, always on top.
         run {
@@ -359,6 +363,31 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             canvas.drawCircle(mx, my, 22f, dotHaloPaint)
             canvas.drawCircle(mx, my, 15f, dotPaint)
             canvas.drawCircle(mx, my, 15f, dotRingPaint)
+        }
+
+        // Full-screen photo insert: shown when the moving marker reaches the photo position.
+        // The map is paused (see RouteVideoTimeline.mapProgress), so the marker literally
+        // stops where the shot was taken. Fade in/out is at most PHOTO_FADE_SEC.
+        tl.photoAt(frame)?.let { photo ->
+            val alpha = tl.photoAlpha(frame)
+            if (alpha > 0f) {
+                // Solid backdrop so the map never bleeds through the photo.
+                canvas.drawRect(0f, 0f, w, h, photoBackdropPaint.apply { this.alpha = (alpha * 255).toInt() })
+                val bitmap = decodePhoto(photo.uri, 1080)
+                if (bitmap != null) {
+                    // Fit the whole photo: never crop the subject out of frame.
+                    val scale = min(w / bitmap.width, h / bitmap.height)
+                    val drawW = bitmap.width * scale
+                    val drawH = bitmap.height * scale
+                    photoPaint.alpha = (alpha * 255).toInt()
+                    canvas.drawBitmap(
+                        bitmap,
+                        null,
+                        android.graphics.RectF((w - drawW) / 2f, (h - drawH) / 2f, (w + drawW) / 2f, (h + drawH) / 2f),
+                        photoPaint
+                    )
+                }
+            }
         }
 
         drawTexts(track, canvas, w, h)
@@ -377,7 +406,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
 
     private fun decodePhoto(path: String, maxDim: Int): Bitmap? {
         photoCache.get(path)?.let { return it }
-        val bitmap = runCatching {
+        val decoded = runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(path, bounds)
             var sample = 1
@@ -386,7 +415,28 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             }
             BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
         }.getOrNull() ?: return null
+        val bitmap = applyExifRotation(path, decoded)
         photoCache.put(path, bitmap)
         return bitmap
+    }
+
+    /** Camera photos are often stored rotated; without this the insert is sideways. */
+    private fun applyExifRotation(path: String, bitmap: Bitmap): Bitmap {
+        val orientation = runCatching {
+            androidx.exifinterface.media.ExifInterface(path)
+                .getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, 0)
+        }.getOrDefault(0)
+        val matrix = android.graphics.Matrix()
+        when (orientation) {
+            3 -> matrix.postRotate(180f)
+            6 -> matrix.postRotate(90f)
+            8 -> matrix.postRotate(270f)
+            else -> return bitmap
+        }
+        return runCatching {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also {
+                if (it !== bitmap) bitmap.recycle()
+            }
+        }.getOrDefault(bitmap)
     }
 }

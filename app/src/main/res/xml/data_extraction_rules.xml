@@ -4,6 +4,7 @@
     <cloud-backup>
         <exclude domain="file" path="photos/" />
         <exclude domain="file" path="videos/" />
+        <exclude domain="file" path="drafts/" />
         <exclude domain="file" path="datastore/" />
         <exclude domain="database" path="routestory.db" />
         <exclude domain="database" path="routestory.db-wal" />
@@ -13,6 +14,7 @@
     <device-transfer>
         <exclude domain="file" path="photos/" />
         <exclude domain="file" path="videos/" />
+        <exclude domain="file" path="drafts/" />
         <exclude domain="file" path="datastore/" />
         <exclude domain="database" path="routestory.db" />
         <exclude domain="database" path="routestory.db-wal" />

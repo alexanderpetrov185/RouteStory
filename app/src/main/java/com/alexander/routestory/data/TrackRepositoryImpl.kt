@@ -27,7 +27,9 @@ class TrackRepositoryImpl @Inject constructor(
 
     override suspend fun saveTrack(track: Track): Long {
         val entity = track.toEntity()
-        return dao.insertTrackWithPoints(entity, track.points.map { it.toEntity(entity.id) })
+        return dao.insertTrackWithPoints(entity, track.points.map { it.toEntity(entity.id) },
+            track.photos.map { TrackPhotoEntity(trackId = 0, uri = it.uri, timestamp = it.timestamp,
+                latitude = it.latitude, longitude = it.longitude) })
     }
 
     override fun observeTracks(): Flow<List<Track>> =

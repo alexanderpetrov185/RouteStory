@@ -31,6 +31,14 @@ internal class RouteVideoMotion(points: List<TrackPoint>) {
         return i + if (segment > 0) ((distance - cumulative[i]) / segment).toFloat() else 0f
     }
 
+    /** Distance fraction (0..1) of the route point at [index]. */
+    fun fractionAt(index: Int): Float {
+        if (cumulative.size < 2) return 0f
+        val total = cumulative.last()
+        if (total <= 0.001) return index.toFloat() / cumulative.lastIndex
+        return (cumulative[index.coerceIn(0, cumulative.lastIndex)] / total).toFloat()
+    }
+
     companion object {
         fun progress(frame: Int, frameCount: Int): Float =
             (frame.toFloat() / (frameCount - 1).coerceAtLeast(1)).coerceIn(0f, 1f)

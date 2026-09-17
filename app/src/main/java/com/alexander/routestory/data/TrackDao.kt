@@ -14,11 +14,15 @@ interface TrackDao {
     @Insert
     suspend fun insertPoints(points: List<TrackPointEntity>)
 
-    /** Saves a track and all of its points in a single transaction. */
+    @Insert
+    suspend fun insertPhotos(photos: List<TrackPhotoEntity>)
+
+    /** Saves track, points and photos atomically, assigning the generated track ID. */
     @Transaction
-    suspend fun insertTrackWithPoints(track: TrackEntity, points: List<TrackPointEntity>): Long {
+    suspend fun insertTrackWithPoints(track: TrackEntity, points: List<TrackPointEntity>, photos: List<TrackPhotoEntity> = emptyList()): Long {
         val trackId = insertTrack(track)
         insertPoints(points.map { it.copy(trackId = trackId) })
+        insertPhotos(photos.map { it.copy(trackId = trackId) })
         return trackId
     }
 

@@ -61,4 +61,13 @@
     <string name="map_my_location">Моё местоположение</string>
     <string name="waiting_gps">Ожидание GPS…</string>
     <string name="action_grant_location">Разрешить геолокацию</string>
+    <string name="photo_action">Фото</string>
+    <string name="photo_preview_title">Фото сделано</string>
+    <string name="photo_preview_hint">Добавить в поездку? Всего: %1$d</string>
+    <string name="action_add">Добавить</string>
+    <string name="action_retake">Переснять</string>
+    <string name="draft_found_title">Незавершённая запись</string>
+    <string name="draft_found_text">Приложение было закрыто. Продолжить эту поездку?</string>
+    <string name="action_continue">Продолжить</string>
+    <string name="photo_error">Не удалось добавить фото</string>
 </resources>
