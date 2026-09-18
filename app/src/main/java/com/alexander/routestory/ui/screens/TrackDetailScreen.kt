@@ -18,6 +18,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -138,6 +140,7 @@ fun TrackDetailScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(innerPadding)
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -188,12 +191,19 @@ fun TrackDetailScreen(
                 }
                 // Sprint 23: creating a video is a core action for Free users too — it is
                 // always visible, not hidden behind the Pro-only edit mode.
+                // Sprint 27: Free creates once (no saved file yet); re-create stays Pro.
+                val canCreateVideo = isPro || archivedVideo == null
                 Button(
                     onClick = { viewModel.createVideo(current) },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = videoState !is VideoExportState.Running
+                    enabled = videoState !is VideoExportState.Running && canCreateVideo
                 ) {
-                    Text(stringResource(R.string.action_create_video))
+                    Text(
+                        stringResource(
+                            if (canCreateVideo) R.string.action_create_video
+                            else R.string.action_create_video_pro
+                        )
+                    )
                 }
                 if (editMode) {
                     OutlinedButton(
@@ -221,10 +231,12 @@ fun TrackDetailScreen(
                         )
                     }
                 }
-                // Watching an already rendered video is free for everyone.
-                val archivedVideo = remember(current.id, videoState) {
-                    viewModel.archivedVideo(current.id)
-                }
+            // Sprint 22: the ride screen is view-only by default; editing (photos,
+            // re-rendering the video) is an explicit action, gated to Pro.
+            // Watching an already rendered video is free for everyone.
+            val archivedVideo = remember(current.id, videoState) {
+                viewModel.archivedVideo(current.id)
+            }
                 if (archivedVideo != null && videoState !is VideoExportState.Done) {
                     var showVideo by remember(current.id) { mutableStateOf(false) }
                     OutlinedButton(
