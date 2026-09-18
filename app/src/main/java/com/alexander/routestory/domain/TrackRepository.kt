@@ -14,6 +14,9 @@ interface TrackRepository {
 
     suspend fun deleteTrack(id: Long)
 
+    /** Renames a saved ride. */
+    suspend fun renameTrack(id: Long, name: String)
+
     /** Copies the photo into app storage, reads EXIF and inserts a DB row. */
     suspend fun addPhoto(track: Track, sourceUri: Uri): Boolean
 

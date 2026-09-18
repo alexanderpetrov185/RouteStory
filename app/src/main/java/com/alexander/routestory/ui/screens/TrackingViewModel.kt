@@ -35,7 +35,7 @@ class TrackingViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val stateHolder: TrackingStateHolder,
     private val savedState: SavedStateHandle,
-    proRepository: ProRepository
+    private val proRepository: ProRepository
 ) : ViewModel() {
     val isPro = proRepository.isPro.stateIn(viewModelScope, SharingStarted.Eagerly, false)
     private val _photoErrors = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -69,6 +69,13 @@ class TrackingViewModel @Inject constructor(
     fun checkDraft() = sendAction(TrackRecordingService.ACTION_CHECK_DRAFT)
     fun restoreDraft() = sendAction(TrackRecordingService.ACTION_RESTORE_DRAFT, foreground = true)
     fun discardDraft() = sendAction(TrackRecordingService.ACTION_DISCARD_DRAFT)
+
+    /** Persists the "don't ask again" preference via ProRepository. */
+    fun setDiscardConfirmed(enabled: Boolean) {
+        viewModelScope.launch {
+            proRepository.setDiscardConfirmed(enabled)
+        }
+    }
 
     val photoPreview = savedState.getStateFlow<String?>("photoPreview", null)
     fun captureResult(success: Boolean) {

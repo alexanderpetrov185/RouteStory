@@ -12,16 +12,22 @@ import javax.inject.Singleton
 
 private val Context.proDataStore by preferencesDataStore(name = "pro_settings")
 
-/** Local storage of the Pro purchase flag. */
+/** Local storage of the Pro purchase flag and draft-dismissal preference. */
 @Singleton
 class ProRepository @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val proKey = booleanPreferencesKey("pro")
+    private val discardConfirmedKey = booleanPreferencesKey("discardConfirmed")
 
     val isPro: Flow<Boolean> = context.proDataStore.data.map { prefs -> prefs[proKey] ?: false }
+    val discardConfirmed: Flow<Boolean> = context.proDataStore.data.map { prefs -> prefs[discardConfirmedKey] ?: false }
 
     suspend fun setPro(enabled: Boolean) {
         context.proDataStore.edit { it[proKey] = enabled }
+    }
+
+    suspend fun setDiscardConfirmed(enabled: Boolean) {
+        context.proDataStore.edit { it[discardConfirmedKey] = enabled }
     }
 }

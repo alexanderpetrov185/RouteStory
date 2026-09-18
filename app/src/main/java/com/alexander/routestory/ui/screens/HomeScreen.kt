@@ -18,9 +18,19 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -40,6 +50,8 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var dontAskAgain by remember { mutableStateOf(false) }
+
     // Ask about an interrupted ride as soon as the app opens.
     LaunchedEffect(Unit) { viewModel.checkDraft() }
 
@@ -47,15 +59,43 @@ fun HomeScreen(
         AlertDialog(
             onDismissRequest = { },
             title = { Text(stringResource(R.string.draft_found_title)) },
-            text = { Text(stringResource(R.string.draft_found_text)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(stringResource(R.string.draft_found_text))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { dontAskAgain = !dontAskAgain }
+                    ) {
+                        Checkbox(
+                            checked = dontAskAgain,
+                            onCheckedChange = { dontAskAgain = it }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.draft_dont_ask),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
+                    if (dontAskAgain) {
+                        viewModel.setDiscardConfirmed(true)
+                    }
                     viewModel.resumeDraft()
                     onStartTracking()
                 }) { Text(stringResource(R.string.action_continue)) }
             },
             dismissButton = {
-                TextButton(onClick = viewModel::discardDraft) {
+                TextButton(onClick = {
+                    if (dontAskAgain) {
+                        viewModel.setDiscardConfirmed(true)
+                    }
+                    viewModel.discardDraft()
+                }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }

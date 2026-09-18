@@ -32,6 +32,9 @@ interface TrackDao {
     @Query("SELECT * FROM tracks WHERE id = :id")
     suspend fun getTrackById(id: Long): TrackEntity?
 
+    @Query("UPDATE tracks SET name = :name WHERE id = :id")
+    suspend fun renameTrack(id: Long, name: String)
+
     @Query("SELECT * FROM track_points WHERE trackId = :trackId ORDER BY timestamp ASC")
     suspend fun getPointsForTrack(trackId: Long): List<TrackPointEntity>
 

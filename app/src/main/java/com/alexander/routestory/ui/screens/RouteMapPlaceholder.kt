@@ -231,20 +231,6 @@ fun RouteMapPlaceholder(
             }
         }
         SnackbarHost(snackbarHostState)
-        if (BuildConfig.DEBUG) {
-            val fixText = currentPosition?.let { "%.5f,%.5f".format(it.first, it.second) } ?: "-"
-            Text(
-                text = "map=${if (useCanvas) "Canvas" else "ML"} reach=$online " +
-                    "style=${styleOk?.let { if (it) "ok" else "fail" } ?: "?"} fix=$fixText",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(6.dp)
-                    .background(Color(0xCC1C2330))
-                    .padding(4.dp)
-            )
-        }
     }
 }
 

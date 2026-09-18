@@ -47,6 +47,10 @@ class TrackRepositoryImpl @Inject constructor(
         dao.deleteTrackById(id)
     }
 
+    override suspend fun renameTrack(id: Long, name: String) {
+        dao.renameTrack(id, name)
+    }
+
     override suspend fun addPhoto(track: Track, sourceUri: Uri): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val dir = File(context.filesDir, "photos").apply { mkdirs() }

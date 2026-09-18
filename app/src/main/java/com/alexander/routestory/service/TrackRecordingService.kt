@@ -1,4 +1,4 @@
-package com.alexander.routestory.service
+﻿package com.alexander.routestory.service
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -10,11 +10,13 @@ import android.location.Location
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.alexander.routestory.MainActivity
 import com.alexander.routestory.R
+import com.alexander.routestory.data.ProRepository
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.domain.TrackPoint
 import com.alexander.routestory.domain.TrackRepository
@@ -32,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -45,6 +48,7 @@ class TrackRecordingService : LifecycleService() {
     @Inject lateinit var stateHolder: TrackingStateHolder
     @Inject lateinit var repository: TrackRepository
     @Inject lateinit var draftStore: TrackDraftStore
+    @Inject lateinit var proRepository: ProRepository
     @Inject lateinit var locationClient: FusedLocationProviderClient
 
     private var saving = false
@@ -94,6 +98,9 @@ class TrackRecordingService : LifecycleService() {
                     draftStore.load()?.photos?.forEach { java.io.File(it.uri).delete() }
                     draftStore.clear()
                     stateHolder.setDraftAvailable(false)
+                    lifecycleScope.launch {
+                        proRepository.setDiscardConfirmed(true)
+                    }
                     stopSelf()
                 }
             }
@@ -150,7 +157,16 @@ class TrackRecordingService : LifecycleService() {
     /** Publishes whether a recoverable draft exists (called when the app opens). */
     private fun checkDraft() {
         if (stateHolder.uiState.value.state != TrackingState.IDLE) return
-        stateHolder.setDraftAvailable(draftStore.hasDraft())
+        lifecycleScope.launch {
+            val skip = proRepository.discardConfirmed.first()
+            if (skip) {
+                stateHolder.setDraftAvailable(false)
+                cancelDraftNotification()
+                return@launch
+            }
+            stateHolder.setDraftAvailable(draftStore.hasDraft())
+            if (stateHolder.uiState.value.draftAvailable) notifyDraftInterrupted()
+        }
     }
 
     /** Restores a killed session and immediately keeps recording, so one tap resumes. */
@@ -184,7 +200,7 @@ class TrackRecordingService : LifecycleService() {
         startForeground()
         updateNotification()
         if (resume) {
-            // One-tap continuation: the user picked "Продолжить", so go straight back to
+            // One-tap continuation: the user picked Resume, so go straight back to
             // RECORDING instead of leaving the restored ride paused.
             recording = true
             lastPointTimeMs = System.currentTimeMillis()
@@ -266,11 +282,12 @@ class TrackRecordingService : LifecycleService() {
         stopTicker()
         safeRemoveLocationUpdates()
         val snapshot = points.toList()
-        val name = trackName
-        val start = startTime
         val end = System.currentTimeMillis()
         val distance = totalDistanceM
         val duration = accumulatedMs
+        // Light-hearted auto name from distance/duration; the user can rename in the summary.
+        val name = com.alexander.routestory.utils.TripNames.generate(distance, duration, end)
+        val start = startTime
         points.clear()
         totalDistanceM = 0f
         lastSpeedMps = 0f
@@ -501,6 +518,11 @@ class TrackRecordingService : LifecycleService() {
         )
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.createNotificationChannel(channel)
+    }
+
+    /** Cancels the draft-interrupted notification. */
+    private fun cancelDraftNotification() {
+        NotificationManagerCompat.from(this).cancel(DRAFT_NOTIFICATION_ID)
     }
 
     companion object {

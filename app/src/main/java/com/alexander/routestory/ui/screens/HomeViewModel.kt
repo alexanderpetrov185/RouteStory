@@ -5,12 +5,15 @@ import android.content.Intent
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.alexander.routestory.data.ProRepository
 import com.alexander.routestory.domain.TrackingUiState
 import com.alexander.routestory.service.TrackRecordingService
 import com.alexander.routestory.service.TrackingStateHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
@@ -21,10 +24,17 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val stateHolder: TrackingStateHolder
+    private val stateHolder: TrackingStateHolder,
+    private val proRepository: ProRepository
 ) : ViewModel() {
 
     val uiState: StateFlow<TrackingUiState> = stateHolder.uiState
+
+    fun setDiscardConfirmed(enabled: Boolean) {
+        viewModelScope.launch {
+            proRepository.setDiscardConfirmed(enabled)
+        }
+    }
 
     /** Asks the recording service whether a draft exists on disk. */
     fun checkDraft() = sendAction(TrackRecordingService.ACTION_CHECK_DRAFT)
