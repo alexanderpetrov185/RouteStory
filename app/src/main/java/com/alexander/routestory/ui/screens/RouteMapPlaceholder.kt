@@ -15,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -159,7 +160,8 @@ fun RouteMapPlaceholder(
                 modifier = Modifier.fillMaxSize(),
                 currentPosition = currentPosition,
                 followLastPoint = followLastPoint,
-                locateTick = locateTick
+                locateTick = locateTick,
+                mapLoadingText = if (!online) null else stringResource(R.string.loading_map)
             )
             when {
                 !mapAllowed && !MapTiles.FORCE_OSM_CANVAS -> MapNotice(
@@ -167,7 +169,7 @@ fun RouteMapPlaceholder(
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
                 !online -> MapNotice(
-                    text = stringResource(R.string.map_no_network),
+                    text = stringResource(R.string.offline_region),
                     modifier = Modifier.align(Alignment.TopCenter)
                 )
             }
@@ -650,14 +652,15 @@ private fun MapLibreRouteMap(
 
 /** Last-resort renderer used when MapLibre cannot start; keeps the route visible. */
 @Composable
-private fun RouteMapCanvas(
+private fun BoxScope.RouteMapCanvas(
     points: List<TrackPoint>,
     photoPositions: List<Pair<Double, Double>>,
     onPhotoTap: ((Int) -> Unit)?,
     modifier: Modifier = Modifier,
     currentPosition: Pair<Double, Double>? = null,
     followLastPoint: Boolean = false,
-    locateTick: Int = 0
+    locateTick: Int = 0,
+    mapLoadingText: String? = null
 ) {
     val context = LocalContext.current
     val markerColor = MaterialTheme.colorScheme.tertiary
@@ -713,10 +716,13 @@ private fun RouteMapCanvas(
     val tileX = kotlin.math.floor(viewX * tileN).toInt().coerceIn(0, tileN - 1)
     val tileY = kotlin.math.floor(viewY * tileN).toInt().coerceIn(0, tileN - 1)
     var mosaic by remember { mutableStateOf<OsmTileLayer.Mosaic?>(null) }
+    var mapLoading by remember { mutableStateOf(false) }
     val hasPosition = currentPosition != null || points.isNotEmpty()
+    val showMapLoading = !hasRoute && mapLoading && hasPosition
     // One fetch path, debounced by viewport tile/zoom, not by every GPS fix.
     LaunchedEffect(tileZoom, tileX, tileY, hasPosition) {
-        if (!hasPosition) return@LaunchedEffect
+        if (!hasPosition) { mapLoading = false; return@LaunchedEffect }
+        mapLoading = mosaic == null
         delay(250)
         val lat = Math.toDegrees(kotlin.math.atan(kotlin.math.sinh(Math.PI * (1 - 2 * viewY))))
         val next = OsmTileLayer.mosaic(
@@ -724,6 +730,7 @@ private fun RouteMapCanvas(
             lonSpan, latSpan, tiles = 3, requestedZoom = tileZoom
         )
         if (next != null) mosaic = next
+        mapLoading = false
     }
     val transform by rememberUpdatedState<(Offset, Offset, Float) -> Unit>({ centroid, pan, factor ->
         val nextZoom = (zoom + (kotlin.math.ln(factor.toDouble()) / kotlin.math.ln(2.0)).toFloat())
@@ -813,5 +820,8 @@ private fun RouteMapCanvas(
             drawCircle(Color(0xFF2196F3), radius = 15f, center = meCenter)
             drawCircle(androidx.compose.ui.graphics.Color.White, radius = 15f, center = meCenter, style = Stroke(width = 4f))
         }
+    }
+    if (showMapLoading && mapLoadingText != null) {
+        MapNotice(text = mapLoadingText, modifier = Modifier.align(Alignment.TopCenter))
     }
 }

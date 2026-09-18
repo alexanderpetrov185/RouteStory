@@ -4,7 +4,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Light-hearted auto names for finished rides (Sprint 25). */
+/** Light-hearted auto names for finished rides (Sprint 25-26). */
 object TripNames {
 
     fun generate(distanceMeters: Float, durationMs: Long, endMs: Long): String {
@@ -17,15 +17,15 @@ object TripNames {
             avgMps > 8.5f -> pick(FAST, endMs)
             // Slower than a slow walk.
             avgMps < 1.0f -> pick(SLOW, endMs)
-            else -> SimpleDateFormat("dd.MM HH:mm", Locale.getDefault()).format(Date(endMs))
-                .let { "Поездка $it" }
+            else -> pick(MID, endMs)
         }
     }
 
     private fun pick(variant: Array<String>, endMs: Long): String =
         variant[(endMs / 1_000L).toInt().mod(variant.size)]
 
-    private val SHORT = arrayOf("Коротыш", "Вышел подышать", "Вылазка")
-    private val FAST = arrayOf("Молния", "Куда так спешил?", "Гонка")
-    private val SLOW = arrayOf("Черепаший ход", "Прогулка медитативная", "Шаг за шагом")
+    private val SHORT = arrayOf("Вечерний круг", "Тихий маршрут", "Маршрут налегке")
+    private val FAST = arrayOf("Быстрый радиус", "Маршрут с ветерком", "Скоростная дуга")
+    private val SLOW = arrayOf("Тихая прогулка", "Маршрут без спешки", "Спокойный круг")
+    private val MID = arrayOf("Дневной маршрут", "Маршрут выходного дня", "Любимый круг")
 }

@@ -60,6 +60,11 @@
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
     <string name="map_my_location">Моё местоположение</string>
     <string name="waiting_gps">Ожидание GPS…</string>
+    <string name="searching_gps">Ищем спутник…</string>
+    <string name="loading_map">Загружаем карту…</string>
+    <string name="gps_disabled_short">GPS выключен</string>
+    <string name="action_enable_gps">Включить GPS</string>
+    <string name="offline_region">В вашем регионе действуют ограничения. Подключитесь к Wi-Fi, чтобы загрузить карту. Маршрут продолжит записываться по GPS.</string>
     <string name="action_grant_location">Разрешить геолокацию</string>
     <string name="photo_action">Фото</string>
     <string name="photo_preview_title">Фото сделано</string>
@@ -83,5 +88,7 @@
     <string name="battery_text">Чтобы запись не прерывалась системой, разрешите RouteStory работу в фоне без ограничений батареи.</string>
     <string name="action_open_battery_settings">Настройки</string>
     <string name="action_later">Позже</string>
+    <string name="action_rename">Переименовать</string>
+    <string name="home_subtitle">Записывайте маршрут и превращайте его в видео</string>
 </resources>
 

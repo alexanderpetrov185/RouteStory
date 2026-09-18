@@ -102,17 +102,41 @@ class VideoExportUseCase @Inject constructor(
             var eosReceived = false
             var frame = 0
             val info = MediaCodec.BufferInfo()
-            // Interleaving state for the BGM samples.
+            // Interleaving state for the BGM samples (kept for the no-loop fallback).
+            @Suppress("UNUSED_VARIABLE")
             var audioNext = 0
             fun writeAudioUpTo(ptsUs: Long) {
                 if (bgm == null || audioTrack < 0) return
                 val samples = bgm.samples
-                while (audioNext < samples.size && samples[audioNext].ptsUs <= ptsUs) {
-                    val s = samples[audioNext++]
-                    val out = java.nio.ByteBuffer.wrap(s.data)
-                    val ai = MediaCodec.BufferInfo()
-                    ai.set(0, s.data.size, s.ptsUs, 0)
-                    mux.writeSampleData(audioTrack, out, ai)
+                if (samples.isEmpty()) return
+                val totalUs = samples.last().ptsUs
+                if (totalUs <= 0L) {
+                    while (audioNext < samples.size && samples[audioNext].ptsUs <= ptsUs) {
+                        val s = samples[audioNext++]
+                        val out = java.nio.ByteBuffer.wrap(s.data)
+                        val ai = MediaCodec.BufferInfo()
+                        ai.set(0, s.data.size, s.ptsUs, 0)
+                        mux.writeSampleData(audioTrack, out, ai)
+                    }
+                    return
+                }
+                // Loop the bundled BGM until the video ends: shift whole-loop
+                // copies forward by totalUs so pts stays monotonic.
+                var loop = 0L
+                while (true) {
+                    var advanced = false
+                    for (s in samples) {
+                        val shifted = s.ptsUs + loop * totalUs
+                        if (shifted > ptsUs) return
+                        val out = java.nio.ByteBuffer.wrap(s.data)
+                        val ai = MediaCodec.BufferInfo()
+                        ai.set(0, s.data.size, shifted, 0)
+                        mux.writeSampleData(audioTrack, out, ai)
+                        advanced = true
+                    }
+                    if (!advanced) return
+                    loop++
+                    if (loop > 64) return // safety: ~hours of audio, never loop forever
                 }
             }
 

@@ -59,6 +59,15 @@ class TrackDetailViewModel @Inject constructor(
         }
     }
 
+    fun renameCurrent(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { repository.renameTrack(trackId, trimmed) }
+            _track.value = repository.getTrack(trackId)
+        }
+    }
+
     fun addPhotos(uris: List<Uri>) {
         val current = _track.value ?: return
         viewModelScope.launch {

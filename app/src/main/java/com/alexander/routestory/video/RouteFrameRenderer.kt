@@ -84,6 +84,18 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
 
     /** Sprint 24: intro/outro card typography and heavy dim over the backdrop. */
     private val cardDimPaint = Paint().apply { color = Color.argb(200, 10, 14, 20) }
+    private val schematicGridPaint = Paint().apply {
+        color = Color.argb(38, 255, 255, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+    }
+    private val schematicLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(255, 160, 0)
+        style = Paint.Style.STROKE
+        strokeWidth = 6f
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
     private val appNamePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = 64f
@@ -205,6 +217,20 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private fun cropInfo(track: Track, w: Int, h: Int): MapSnapshotProvider.CropInfo? =
         MapSnapshotProvider.cropInfo(track, w, h)
 
+    private fun drawSchematicGrid(canvas: Canvas, w: Float, h: Float) {
+        val step = min(w, h) / 8f
+        var x = step
+        while (x < w) {
+            canvas.drawLine(x, 0f, x, h, schematicGridPaint)
+            x += step
+        }
+        var y = step
+        while (y < h) {
+            canvas.drawLine(0f, y, w, y, schematicGridPaint)
+            y += step
+        }
+    }
+
     private var cachedTimelineTrack: Track? = null
     private var cachedTimelineFrameCount = -1
     private var cachedTimeline: RouteVideoTimeline? = null
@@ -248,6 +274,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             canvas.drawRect(0f, 0f, w, h, dimPaint)
         } else {
             canvas.drawRect(0f, 0f, w, h, bgPaint)
+            drawSchematicGrid(canvas, w, h)
         }
         if (track.points.isEmpty()) {
             drawTexts(track, canvas, w, h)
@@ -339,25 +366,19 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         // Whole route in the accent colour from frame 0 — it never "draws itself in".
         canvas.drawPath(fullPath, fullAccentPaint)
 
-        // Bright trail: last 15% of route distance, not GPS sample count.
-        val tailFrom = motion.position((progress - 0.15f).coerceAtLeast(0f))
-        val tailIndex = floor(tailFrom).toInt().coerceIn(0, index)
-        val tailFrac = (tailFrom - tailIndex).coerceIn(0f, 1f)
-        val tailBase = track.points[tailIndex]
-        val tailNext = track.points.getOrElse(tailIndex + 1) { tailBase }
-        val trail = android.graphics.Path()
-        val (tx, ty) = project(
-            tailBase.lat + (tailNext.lat - tailBase.lat) * tailFrac,
-            tailBase.lon + (tailNext.lon - tailBase.lon) * tailFrac
-        )
-        trail.moveTo(tx, ty)
-        for (k in tailIndex + 1..index) {
+        // Passed trail: everything 0 -> current point stays highlighted (amber),
+        // the not-yet-travelled remainder keeps the muted full-route colour behind.
+        val passed = android.graphics.Path()
+        val first = track.points.first()
+        val (fx0, fy0) = project(first.lat, first.lon)
+        passed.moveTo(fx0, fy0)
+        for (k in 1..index) {
             val (px, py) = project(track.points[k].lat, track.points[k].lon)
-            trail.lineTo(px, py)
+            passed.lineTo(px, py)
         }
         val (cx0, cy0) = project(curLat, curLon)
-        trail.lineTo(cx0, cy0)
-        canvas.drawPath(trail, trailPaint)
+        passed.lineTo(cx0, cy0)
+        canvas.drawPath(passed, trailPaint)
 
         // Start (green) and finish (red) end points of the route.
         run {

@@ -1,13 +1,15 @@
 package com.alexander.routestory.ui.screens
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.location.LocationManager
-import android.provider.Settings
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -71,8 +73,83 @@ fun TrackingScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
     var hasPermissions by remember { mutableStateOf(false) }
-    var gpsEnabled by remember { mutableStateOf(true) }
+    var gpsEnabled by remember { mutableStateOf(isGpsEnabled(context)) }
     var locateTick by remember { mutableStateOf(0) }
+    var gpsResolutionPending by remember { mutableStateOf(false) }
+
+    fun refreshGpsState(fromProviderChange: Boolean = false) {
+        gpsEnabled = isGpsEnabled(context)
+        if (gpsEnabled && hasPermissions && (fromProviderChange || state.lastFix == null)) {
+            viewModel.requestInitialFix(force = true)
+        }
+    }
+
+    // SettingsClient resolution: "Turn on location?" dialog, no app restart needed.
+    val gpsResolutionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) {
+        gpsResolutionPending = false
+        refreshGpsState(fromProviderChange = true)
+    }
+
+    fun requestEnableGps() {
+        runCatching {
+            val client = com.google.android.gms.location.LocationServices.getSettingsClient(context)
+            val request = com.google.android.gms.location.LocationSettingsRequest.Builder()
+                .addLocationRequest(
+                    com.google.android.gms.location.LocationRequest.Builder(
+                        com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, 2000L
+                    ).build()
+                )
+                .setAlwaysShow(true)
+                .build()
+            client.checkLocationSettings(request)
+                .addOnSuccessListener {
+                    refreshGpsState(fromProviderChange = true)
+                }
+                .addOnFailureListener { e ->
+                    val resolvable = e as? com.google.android.gms.common.api.ResolvableApiException
+                    val sender = resolvable?.resolution?.intentSender
+                    if (sender != null) {
+                        gpsResolutionPending = true
+                        gpsResolutionLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                    } else {
+                        context.startActivity(
+                            Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                        )
+                    }
+                }
+        }.onFailure {
+            context.startActivity(
+                Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+            )
+        }
+    }
+
+    // Live GPS provider changes: no restart needed after toggling GPS in settings.
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == LocationManager.PROVIDERS_CHANGED_ACTION ||
+                    intent?.action == LocationManager.MODE_CHANGED_ACTION
+                ) {
+                    refreshGpsState(fromProviderChange = true)
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(LocationManager.PROVIDERS_CHANGED_ACTION)
+            @Suppress("DEPRECATION")
+            addAction(LocationManager.MODE_CHANGED_ACTION)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose { runCatching { context.unregisterReceiver(receiver) } }
+    }
 
     // Camera: TakePicture writes into a FileProvider file prepared by the ViewModel.
     var pendingUri by remember { mutableStateOf<android.net.Uri?>(null) }
@@ -120,7 +197,7 @@ fun TrackingScreen(
     DisposableEffect(lifecycleOwner, permissions) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                gpsEnabled = isGpsEnabled(context)
+                refreshGpsState(fromProviderChange = true)
                 hasPermissions = permissions.all {
                     ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
                 }
@@ -162,10 +239,11 @@ fun TrackingScreen(
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(stringResource(R.string.gps_disabled))
-                        OutlinedButton(onClick = {
-                            context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                        }) {
-                            Text(stringResource(R.string.action_open_settings))
+                        OutlinedButton(onClick = { requestEnableGps() }) {
+                            Text(
+                                if (gpsResolutionPending) stringResource(R.string.waiting_gps)
+                                else stringResource(R.string.action_enable_gps)
+                            )
                         }
                     }
                 }
@@ -214,7 +292,10 @@ fun TrackingScreen(
                     }
                     if (hasPermissions && state.lastFix == null) {
                         Text(
-                            text = stringResource(R.string.waiting_gps),
+                            text = stringResource(
+                                if (!gpsEnabled) R.string.gps_disabled_short
+                                else R.string.searching_gps
+                            ),
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.align(Alignment.CenterHorizontally)
                         )

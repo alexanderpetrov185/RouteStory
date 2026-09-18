@@ -89,6 +89,7 @@ fun TrackDetailScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var selectedPhoto by remember { mutableStateOf<TrackPhoto?>(null) }
     var showShiftDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     // Sprint 22: the ride screen is view-only by default; editing (photos, re-rendering
     // the video) is an explicit action, gated to Pro.
     var editMode by remember { mutableStateOf(false) }
@@ -150,7 +151,21 @@ fun TrackDetailScreen(
                         .weight(1f)
                 )
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(current.name, style = MaterialTheme.typography.titleLarge)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            current.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (isSummary) {
+                            TextButton(onClick = { showRenameDialog = true }) {
+                                Text(stringResource(R.string.action_rename))
+                            }
+                        }
+                    }
                     Text(
                         GeoUtils.formatDate(current.startTime),
                         style = MaterialTheme.typography.bodyMedium
@@ -271,6 +286,34 @@ fun TrackDetailScreen(
                 }
             }
         }
+    }
+
+    val renameTarget = track
+    if (showRenameDialog && renameTarget != null) {
+        var draft by remember(renameTarget.id, renameTarget.name) { mutableStateOf(renameTarget.name) }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text(stringResource(R.string.action_rename)) },
+            text = {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.renameCurrent(draft)
+                    showRenameDialog = false
+                }) { Text(stringResource(R.string.action_save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
     }
 
     selectedPhoto?.let { photo ->
