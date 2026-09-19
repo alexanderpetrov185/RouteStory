@@ -47,8 +47,15 @@ class TrackDetailViewModel @Inject constructor(
     val isPro: StateFlow<Boolean> = proRepository.isPro
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    /** True when the ride no longer exists (deleted from history after it was stored). */
+    private val _notFound = MutableStateFlow(false)
+    val notFound: StateFlow<Boolean> = _notFound.asStateFlow()
+
     init {
-        viewModelScope.launch { _track.value = repository.getTrack(trackId) }
+        viewModelScope.launch {
+            val loaded = repository.getTrack(trackId)
+            if (loaded == null) _notFound.value = true else _track.value = loaded
+        }
     }
 
     fun deleteTrack() {

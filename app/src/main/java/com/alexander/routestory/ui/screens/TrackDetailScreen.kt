@@ -88,13 +88,14 @@ fun TrackDetailScreen(
     val screenScope = rememberCoroutineScope()
     val videoState by viewModel.videoState.collectAsStateWithLifecycle()
     val isPro by viewModel.isPro.collectAsStateWithLifecycle()
+    val trackMissing by viewModel.notFound.collectAsStateWithLifecycle()
     var showDeleteDialog by remember { mutableStateOf(false) }
     var selectedPhoto by remember { mutableStateOf<TrackPhoto?>(null) }
     var showShiftDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    // Sprint 22: the ride screen is view-only by default; editing (photos, re-rendering
-    // the video) is an explicit action, gated to Pro.
+    // Sprint 27: Pro editing mode (rename, photos, re-render) reached from "Изменить".
     var editMode by remember { mutableStateOf(false) }
+    // Sprint 22: the ride screen is view-only by default; editing (photos, re-rendering
 
     val pickPhotosLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(10)
@@ -131,7 +132,20 @@ fun TrackDetailScreen(
                 modifier = Modifier.fillMaxSize().padding(innerPadding),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator()
+                if (trackMissing) {
+                    // The ride was removed while it was being opened: no endless spinner.
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(stringResource(R.string.track_missing))
+                        Button(onClick = onDone) {
+                            Text(stringResource(R.string.action_close))
+                        }
+                    }
+                } else {
+                    CircularProgressIndicator()
+                }
             }
         } else {
             val photoPositions = remember(current.photos, current.points) {
@@ -145,14 +159,19 @@ fun TrackDetailScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                RouteMapPlaceholder(
-                    points = current.points,
-                    photoPositions = photoPositions,
-                    onPhotoTap = { index -> selectedPhoto = current.photos.getOrNull(index) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                )
+                // A fixed height instead of weight: a weighted child collapses to zero
+                // height inside a vertically scrollable column. Hidden for a ride that has
+                // no accepted fix at all (there is nothing to draw, only empty ocean).
+                if (current.points.isNotEmpty()) {
+                    RouteMapPlaceholder(
+                        points = current.points,
+                        photoPositions = photoPositions,
+                        onPhotoTap = { index -> selectedPhoto = current.photos.getOrNull(index) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(240.dp)
+                    )
+                }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -163,7 +182,7 @@ fun TrackDetailScreen(
                             style = MaterialTheme.typography.titleLarge,
                             modifier = Modifier.weight(1f)
                         )
-                        if (isSummary) {
+                        if (isSummary || editMode) {
                             TextButton(onClick = { showRenameDialog = true }) {
                                 Text(stringResource(R.string.action_rename))
                             }
@@ -189,54 +208,25 @@ fun TrackDetailScreen(
                         PhotoThumb(photo = photo, onClick = { selectedPhoto = photo })
                     }
                 }
-                // Sprint 23: creating a video is a core action for Free users too — it is
-                // always visible, not hidden behind the Pro-only edit mode.
-                // Sprint 27: Free creates once (no saved file yet); re-create stays Pro.
+                // Sprint 27: Free renders one video per ride and afterwards only watches it;
+                // re-creating it is Pro. Watching an already rendered video is free for all.
+                val archivedVideo = remember(current.id, videoState) {
+                    viewModel.archivedVideo(current.id)
+                }
                 val canCreateVideo = isPro || archivedVideo == null
-                Button(
-                    onClick = { viewModel.createVideo(current) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = videoState !is VideoExportState.Running && canCreateVideo
-                ) {
-                    Text(
-                        stringResource(
-                            if (canCreateVideo) R.string.action_create_video
-                            else R.string.action_create_video_pro
-                        )
-                    )
-                }
-                if (editMode) {
-                    OutlinedButton(
-                        onClick = {
-                            pickPhotosLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                if (canCreateVideo) {
+                    Button(
+                        onClick = { viewModel.createVideo(current) },
+                        modifier = Modifier.fillMaxWidth(),
+                        // A ride without points has nothing to animate.
+                        enabled = videoState !is VideoExportState.Running && current.points.isNotEmpty()
                     ) {
-                        Text(stringResource(R.string.action_add_photo))
-                    }
-                } else {
-                    // Pro-only: adding photos / re-rendering is the edit mode; for Free
-                    // users the button leads to the Pro screen instead of hiding video.
-                    OutlinedButton(
-                        onClick = {
-                            if (isPro) editMode = true else onOpenPro()
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            if (isPro) stringResource(R.string.action_edit)
-                            else stringResource(R.string.action_edit) + " (Pro)"
-                        )
+                        Text(stringResource(R.string.action_create_video))
                     }
                 }
-            // Sprint 22: the ride screen is view-only by default; editing (photos,
-            // re-rendering the video) is an explicit action, gated to Pro.
-            // Watching an already rendered video is free for everyone.
-            val archivedVideo = remember(current.id, videoState) {
-                viewModel.archivedVideo(current.id)
-            }
+                // Watch: available to everyone once a rendered video exists (free feature).
+                // Free users see it only when they already have an archived video;
+                // Pro users always have one after their first export.
                 if (archivedVideo != null && videoState !is VideoExportState.Done) {
                     var showVideo by remember(current.id) { mutableStateOf(false) }
                     OutlinedButton(
@@ -261,25 +251,33 @@ fun TrackDetailScreen(
                         )
                     }
                 }
-                if (!isPro) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenPro)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Filled.Star,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                stringResource(R.string.pro_banner),
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(start = 12.dp)
-                            )
+                // Sprint 27: button order is create video -> watch -> edit (Pro) -> delete.
+                // Free is pointed at Pro here instead of the old inline banner.
+                OutlinedButton(
+                    onClick = {
+                        if (isPro) {
+                            editMode = !editMode
+                        } else {
+                            screenScope.launch {
+                                snackbarHostState.showSnackbar(context.getString(R.string.pro_required_edit))
+                            }
+                            onOpenPro()
                         }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(if (editMode) R.string.action_close else R.string.action_edit))
+                }
+                if (editMode) {
+                    OutlinedButton(
+                        onClick = {
+                            pickPhotosLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.action_add_photos))
                     }
                 }
                 OutlinedButton(

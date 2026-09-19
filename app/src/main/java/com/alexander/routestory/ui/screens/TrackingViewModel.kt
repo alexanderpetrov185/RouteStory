@@ -131,7 +131,11 @@ class TrackingViewModel @Inject constructor(
     fun start() = sendAction(TrackRecordingService.ACTION_START, foreground = true)
     fun pause() = sendAction(TrackRecordingService.ACTION_PAUSE)
     fun resume() = sendAction(TrackRecordingService.ACTION_START, foreground = true)
-    fun stop() = sendAction(TrackRecordingService.ACTION_STOP)
+    /** Ignores a repeated Stop once the ride is no longer active. */
+    fun stop() {
+        if (stateHolder.uiState.value.state == TrackingState.IDLE) return
+        sendAction(TrackRecordingService.ACTION_STOP)
+    }
 
     fun consumeSaveOutcome() = stateHolder.consumeSaveOutcome()
 

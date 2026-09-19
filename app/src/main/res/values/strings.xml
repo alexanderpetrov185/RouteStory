@@ -36,6 +36,8 @@
     <string name="shift_minutes_label">Минут</string>
     <string name="action_apply">Применить</string>
     <string name="action_create_video">Создать видео</string>
+    <string name="action_create_video_pro">Создать видео (Pro)</string>
+    <string name="action_add_photos">Добавить фото</string>
     <string name="video_generating">Создание видео…</string>
     <string name="video_done">Видео готово</string>
     <string name="action_save">Сохранить</string>
@@ -55,6 +57,7 @@
     <string name="trip_summary">Итоги поездки</string>
     <string name="action_done">Готово</string>
     <string name="track_not_saved">Недостаточно данных для сохранения</string>
+    <string name="track_missing">Маршрут не найден</string>
     <string name="map_no_network">Карта появится при интернете. Маршрут пишется по GPS</string>
     <string name="map_no_net">Карта появится при интернете. Маршрут пишется по GPS.</string>
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
@@ -64,6 +67,7 @@
     <string name="loading_map">Загружаем карту…</string>
     <string name="gps_disabled_short">GPS выключен</string>
     <string name="action_enable_gps">Включить GPS</string>
+    <string name="action_try_again">Попробовать снова</string>
     <string name="offline_region">В вашем регионе действуют ограничения. Подключитесь к Wi-Fi, чтобы загрузить карту. Маршрут продолжит записываться по GPS.</string>
     <string name="action_grant_location">Разрешить геолокацию</string>
     <string name="photo_action">Фото</string>

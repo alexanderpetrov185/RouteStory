@@ -40,31 +40,43 @@ class VideoExportUseCase @Inject constructor(
         var background: Bitmap? = null
         try {
             // Nothing meaningful to animate; do not create a codec or an empty file.
-            if (track.points.isEmpty()) return@withContext null
-            Log.i("MapSnapshot", "export start points=${track.points.size}")
+            if (track.points.isEmpty()) {
+                Log.e("VideoExport", "export skipped: track has no points")
+                return@withContext null
+            }
+            Log.i("VideoExport", "start points=${track.points.size}")
             val dir = File(context.filesDir, "videos").apply { mkdirs() }
             pruneOldVideos(dir)
             val dest = File(dir, "track_" + track.id + "_" + System.currentTimeMillis() + ".mp4")
             outFile = dest
-            // Static map backdrop (cached tiles, offline-friendly); null falls back to dark bg.
-            // Hard cap: if tiles are slow, a plain track-on-dark clip is better than hanging.
             val snapshotStart = android.os.SystemClock.elapsedRealtime()
             background = withTimeoutOrNull(12_000L) {
-                runCatching { snapshotProvider.snapshot(track, limits.width, limits.height) }.getOrNull()
+                runCatching { snapshotProvider.snapshot(track, limits.width, limits.height) }
+                    .onFailure { Log.e("VideoExport", "snapshot failed", it) }
+                    .getOrNull()
             }
+            val snapshotMs = android.os.SystemClock.elapsedRealtime() - snapshotStart
             Log.i(
-                "MapSnapshot",
-                "snapshot done in ${android.os.SystemClock.elapsedRealtime() - snapshotStart} ms " +
+                "VideoExport",
+                "snapshot done in $snapshotMs ms " +
                     "background=${background != null}"
             )
+            if (background == null) {
+                Log.e("VideoExport", "snapshot failed: no background bitmap produced")
+            }
             val encodeStart = android.os.SystemClock.elapsedRealtime()
-            // Sprint 24: encode the light BGM first — it is small (~60 KB AAC), so the
-            // samples fit in memory and can be interleaved into the muxer during video drain.
-            val bgm = encodeBgmAac()
+            // Sprint 27: the BGM track is optional. Every audio step below is guarded, so a
+            // failing encode or mux only leaves the MP4 silent — the export stays successful.
+            val bgm: EncodedAudio? = encodeBgmAac()
+            Log.i("VideoExport", "bgm samples=${bgm?.samples?.size ?: 0}")
             val renderer = RouteFrameRenderer(limits)
             // The timeline owns frame counting: map animation plus a pause for every photo.
             val timeline = RouteVideoTimeline(track, limits.fps, limits.durationSec, limits.maxPhotos)
             val frameCount = timeline.totalFrames
+            Log.i("VideoExport",
+                "timeline totalFrames=$frameCount " +
+                "${limits.width}x${limits.height}@${limits.fps}fps " +
+                "photos=${timeline.photoCount}")
             // One reusable frame bitmap: no per-frame allocations on weak devices.
             val bitmap = Bitmap.createBitmap(limits.width, limits.height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
@@ -103,40 +115,55 @@ class VideoExportUseCase @Inject constructor(
             var frame = 0
             val info = MediaCodec.BufferInfo()
             // Interleaving state for the BGM samples (kept for the no-loop fallback).
-            @Suppress("UNUSED_VARIABLE")
             var audioNext = 0
+            // Set when the muxer rejects an audio sample: the video keeps encoding and the clip
+            // simply stays silent instead of failing the whole export.
+            var audioBroken = false
+            var lastAudioPtsUs = -1L
             fun writeAudioUpTo(ptsUs: Long) {
-                if (bgm == null || audioTrack < 0) return
+                if (bgm == null || audioTrack < 0 || audioBroken) return
                 val samples = bgm.samples
                 if (samples.isEmpty()) return
-                val totalUs = samples.last().ptsUs
-                if (totalUs <= 0L) {
-                    while (audioNext < samples.size && samples[audioNext].ptsUs <= ptsUs) {
-                        val s = samples[audioNext++]
-                        val out = java.nio.ByteBuffer.wrap(s.data)
-                        val ai = MediaCodec.BufferInfo()
-                        ai.set(0, s.data.size, s.ptsUs, 0)
-                        mux.writeSampleData(audioTrack, out, ai)
-                    }
-                    return
+                // Audio never runs past the video timeline: samples written after the last
+                // video frame are what used to make the muxer throw.
+                if (ptsUs <= lastAudioPtsUs) return
+                fun write(data: ByteArray, pts: Long) {
+                    if (pts <= lastAudioPtsUs) return
+                    val out = java.nio.ByteBuffer.wrap(data)
+                    val ai = MediaCodec.BufferInfo()
+                    ai.set(0, data.size, pts, 0)
+                    mux.writeSampleData(audioTrack, out, ai)
+                    lastAudioPtsUs = pts
                 }
-                // Loop the bundled BGM until the video ends: shift whole-loop
-                // copies forward by totalUs so pts stays monotonic.
-                var loop = 0L
-                while (true) {
-                    var advanced = false
-                    for (s in samples) {
-                        val shifted = s.ptsUs + loop * totalUs
-                        if (shifted > ptsUs) return
-                        val out = java.nio.ByteBuffer.wrap(s.data)
-                        val ai = MediaCodec.BufferInfo()
-                        ai.set(0, s.data.size, shifted, 0)
-                        mux.writeSampleData(audioTrack, out, ai)
-                        advanced = true
+                try {
+                    val totalUs = samples.last().ptsUs
+                    if (totalUs <= 0L) {
+                        while (audioNext < samples.size && samples[audioNext].ptsUs <= ptsUs) {
+                            val s = samples[audioNext]
+                            write(s.data, s.ptsUs)
+                            audioNext++
+                        }
+                        return
                     }
-                    if (!advanced) return
-                    loop++
-                    if (loop > 64) return // safety: ~hours of audio, never loop forever
+                    // Loop the bundled BGM until the video ends: shift whole-loop copies
+                    // forward by totalUs so pts stays monotonic.
+                    var loop = 0L
+                    while (true) {
+                        var advanced = false
+                        for (s in samples) {
+                            val shifted = s.ptsUs + loop * totalUs
+                            if (shifted > ptsUs) return
+                            write(s.data, shifted)
+                            advanced = true
+                        }
+                        if (!advanced) return
+                        loop++
+                        if (loop > 64) return // safety: ~hours of audio, never loop forever
+                    }
+                } catch (e: Exception) {
+                    // Optional track: log and finish with a silent MP4.
+                    audioBroken = true
+                    Log.e("VideoExport", "bgm mux failed, exporting silent video", e)
                 }
             }
 
@@ -180,7 +207,12 @@ class VideoExportUseCase @Inject constructor(
                         videoTrack = mux.addTrack(codec.outputFormat)
                         // Both tracks must be added before start(); audio is fully
                         // encoded by now, so its format is available.
-                        if (bgm != null) audioTrack = mux.addTrack(bgm.format)
+                        if (bgm != null) {
+                            audioTrack = runCatching { mux.addTrack(bgm.format) }
+                                .onFailure { Log.e("VideoExport", "bgm track add failed, silent video", it) }
+                                .getOrDefault(-1)
+                            if (audioTrack < 0) audioBroken = true
+                        }
                         mux.start()
                         muxerStarted = true
                     } else if (outIndex >= 0) {
@@ -209,10 +241,17 @@ class VideoExportUseCase @Inject constructor(
                 }
             }
 
-            // Video EOS reached: flush the remaining BGM samples so the audio track ends.
-            if (bgm != null && muxerStarted) writeAudioUpTo(Long.MAX_VALUE)
-            mux.stop()
-            success = true
+            // No tail flush on purpose: the audio ends with the last video frame, so the muxer
+            // never receives an audio sample past the end of the video.
+            try {
+                mux.stop()
+            } catch (e: Exception) {
+                Log.e("VideoExport", "mux stop failed", e)
+                // Only the optional audio path may degrade the clip to a silent video; a
+                // container that cannot be finalised is a real failure.
+                if (!audioBroken) throw e
+            }
+            success = dest.length() > 0L
             Log.i(
                 "MapSnapshot",
                 "encode done in ${android.os.SystemClock.elapsedRealtime() - encodeStart} ms frames=$frameCount ${limits.width}x${limits.height}@${limits.fps}"
@@ -223,6 +262,7 @@ class VideoExportUseCase @Inject constructor(
             // "Cancel" look ignored.
             throw e
         } catch (e: Exception) {
+            Log.e("VideoExport", "export failed", e)
             null
         } finally {
             try { encoder?.stop() } catch (_: Exception) {}
@@ -245,7 +285,10 @@ class VideoExportUseCase @Inject constructor(
      */
     private fun encodeBgmAac(): EncodedAudio? = runCatching {
         val raw = context.resources.openRawResource(com.alexander.routestory.R.raw.bgm).use { it.readBytes() }
-        if (raw.size <= 44) return null // header only — treat as "no music"
+        if (raw.size <= 44) {
+            Log.e("VideoExport", "BGM skipped: raw size ${raw.size} <= 44 bytes (no music)")
+            return null
+        }
         val sampleRate = 22_050
         val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
@@ -306,7 +349,7 @@ class VideoExportUseCase @Inject constructor(
         try { encoder.stop() } catch (_: Exception) {}
         try { encoder.release() } catch (_: Exception) {}
         EncodedAudio(outFormat ?: error("audio format not reported"), samples)
-    }.getOrNull()
+    }.onFailure { Log.e("VideoExport", "BGM encode failed", it) }.getOrNull()
 
     private fun ptsOf(sampleIndex: Long, sampleRate: Int): Long = sampleIndex * 1_000_000L / sampleRate
 
@@ -405,11 +448,18 @@ class VideoExportUseCase @Inject constructor(
         }
     }
 
-    /** Keeps only the newest videos so storage does not grow indefinitely. */
+    /**
+     * Keeps only the newest temporary exports so storage does not grow indefinitely.
+     * Archived per-ride copies (track_<id>.mp4) are owned by the UI and must survive.
+     */
     private fun pruneOldVideos(dir: File, keep: Int = 4) {
         val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".mp4") }
+            ?.filterNot { ARCHIVE_VIDEO_NAME.matches(it.name) }
             ?.sortedByDescending { it.lastModified() }
             ?: return
         files.drop(keep).forEach { it.delete() }
     }
 }
+
+/** The watchable per-ride copy written by the detail screen ("track_7.mp4"). */
+private val ARCHIVE_VIDEO_NAME = Regex("track_\\d+\\.mp4")

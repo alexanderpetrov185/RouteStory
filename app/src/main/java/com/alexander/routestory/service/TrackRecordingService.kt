@@ -48,6 +48,7 @@ class TrackRecordingService : LifecycleService() {
     @Inject lateinit var stateHolder: TrackingStateHolder
     @Inject lateinit var repository: TrackRepository
     @Inject lateinit var draftStore: TrackDraftStore
+    @Inject lateinit var pendingNavigation: PendingNavigationStore
     @Inject lateinit var proRepository: ProRepository
     @Inject lateinit var locationClient: FusedLocationProviderClient
 
@@ -129,6 +130,8 @@ class TrackRecordingService : LifecycleService() {
         runCatching {
             val intent = Intent(this, com.alexander.routestory.MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                // Sprint 27: opens the recording screen, never a bare Home.
+                .putExtra(MainActivity.EXTRA_OPEN_TRACKING, true)
             val pending = PendingIntent.getActivity(
                 this, 0, intent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -274,7 +277,15 @@ class TrackRecordingService : LifecycleService() {
 
     private fun stopRecording() {
         if (stateHolder.uiState.value.capturePending) return
+        // A second Stop (double tap, or the shade action right after the in-app button) must
+        // not discard the ride that is already being written.
+        if (saving) return
+        saving = true
         val photos = stateHolder.uiState.value.photos.toList()
+        // Captured before reset(): a session exists from the moment Start ran, even when the
+        // GPS never produced an acceptable fix.
+        val hadSession = startTime > 0L || stateHolder.uiState.value.sessionId.isNotEmpty() ||
+            points.isNotEmpty() || photos.isNotEmpty()
         if (recording) {
             accumulatedMs += System.currentTimeMillis() - segmentStartMs
             recording = false
@@ -296,12 +307,11 @@ class TrackRecordingService : LifecycleService() {
         lifecycleScope.launch {
             // The service is torn down right after saving, so the write must not be cancellable.
             var saveFailed = false
-            // A ride is worth keeping whenever it has either two points (a real line) or
-            // at least a meter of measured distance. "Not enough data" is reserved for
-            // truly empty recordings, not for short ones.
-            val hasUsableData = snapshot.size >= 2 || distance >= 1f
+            // Sprint 27: a Stop of a started ride is always stored, even with one point, zero
+            // distance or zero duration. "Недостаточно данных" is reserved for a Stop without
+            // any session at all.
             val trackId = withContext(NonCancellable + Dispatchers.IO) {
-                if (!hasUsableData) {
+                if (!hadSession) {
                     null
                 } else {
                     runCatching {
@@ -320,7 +330,13 @@ class TrackRecordingService : LifecycleService() {
                 }
             }
             if (trackId == null && !saveFailed) photos.forEach { java.io.File(it.uri).delete() }
-            if (trackId != null) stateHolder.notifySaved(trackId) else stateHolder.notifyDiscarded()
+            if (trackId != null) {
+                // A cold start after a Stop from the shade must open this ride, not Home.
+                pendingNavigation.setSummaryTrack(trackId)
+                stateHolder.notifySaved(trackId)
+            } else {
+                stateHolder.notifyDiscarded()
+            }
             // A failed write keeps the draft: the ride can still be recovered instead of
             // being silently lost together with the process.
             if (!saveFailed) {
@@ -480,8 +496,15 @@ class TrackRecordingService : LifecycleService() {
     }
 
     private fun buildNotification(): Notification {
+        // Sprint 27: tapping the ongoing notification must land on the recording screen.
         val contentIntent = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                putExtra(MainActivity.EXTRA_OPEN_TRACKING, true)
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val (pauseAction, pauseLabel) = if (recording) {
             ACTION_PAUSE to getString(R.string.action_pause)

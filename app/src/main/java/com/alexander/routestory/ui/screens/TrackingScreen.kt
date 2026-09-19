@@ -65,7 +65,6 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackingScreen(
-    onTrackSaved: (Long) -> Unit = {},
     viewModel: TrackingViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -207,18 +206,13 @@ fun TrackingScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // Navigation to the summary lives in the nav host: it must also fire when this screen is
+    // not composed (Stop from the notification shade). The "empty stop" message stays here.
     LaunchedEffect(Unit) {
         viewModel.saveOutcome.collect { outcome ->
-            when (outcome) {
-                is TrackSaveOutcome.Saved -> {
-                    viewModel.consumeSaveOutcome()
-                    onTrackSaved(outcome.trackId)
-                }
-                TrackSaveOutcome.Discarded -> {
-                    viewModel.consumeSaveOutcome()
-                    snackbarHostState.showSnackbar(context.getString(R.string.track_not_saved))
-                }
-                null -> Unit
+            if (outcome == TrackSaveOutcome.Discarded) {
+                viewModel.consumeSaveOutcome()
+                snackbarHostState.showSnackbar(context.getString(R.string.track_not_saved))
             }
         }
     }
