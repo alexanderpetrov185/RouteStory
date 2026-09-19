@@ -59,7 +59,7 @@
     <string name="track_not_saved">Недостаточно данных для сохранения</string>
     <string name="track_missing">Маршрут не найден</string>
     <string name="map_no_network">Карта появится при интернете. Маршрут пишется по GPS</string>
-    <string name="map_no_net">Карта появится при интернете. Маршрут пишется по GPS.</string>
+    <string name="map_no_net">Нет доступа к картам. Подключитесь к Wi-Fi или проверьте соединение. Карта кэшируется; для записи достаточно GPS.</string>
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
     <string name="map_my_location">Моё местоположение</string>
     <string name="waiting_gps">Ожидание GPS…</string>
@@ -68,7 +68,7 @@
     <string name="gps_disabled_short">GPS выключен</string>
     <string name="action_enable_gps">Включить GPS</string>
     <string name="action_try_again">Попробовать снова</string>
-    <string name="offline_region">В вашем регионе действуют ограничения. Подключитесь к Wi-Fi, чтобы загрузить карту. Маршрут продолжит записываться по GPS.</string>
+    <string name="offline_region">Нет доступа к картам. Подключитесь к Wi-Fi или проверьте соединение. Карта кэшируется; для записи достаточно GPS.</string>
     <string name="action_grant_location">Разрешить геолокацию</string>
     <string name="photo_action">Фото</string>
     <string name="photo_preview_title">Фото сделано</string>
@@ -78,8 +78,8 @@
     <string name="draft_found_title">Незавершённая запись</string>
     <string name="draft_found_text">Приложение было закрыто. Продолжить эту поездку?</string>
     <string name="action_continue">Продолжить</string>
-    <string name="draft_notification_title">Запись прервана</string>
-    <string name="draft_notification_text">Откройте RouteStory, чтобы продолжить запись маршрута</string>
+    <string name="draft_notification_title">Запись на паузе</string>
+    <string name="draft_notification_text">Данные сохранены. Откройте приложение, чтобы продолжить маршрут.</string>
     <string name="draft_dont_ask">Не спрашивать снова</string>
     <string name="photo_error">Не удалось добавить фото</string>
     <string name="photo_error_camera">Камера не сохранила фото</string>

@@ -89,7 +89,15 @@ class TrackRecordingService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
-            ACTION_START -> startRecording()
+            // The system may have recreated this instance while the ride kept living in the
+            // shared state (notification action, task brought back). Without hydrating, the
+            // private fields are zero and a Stop would store an empty, epoch-dated ride.
+            // pauseRecording()/stopRecording() hydrate themselves; a null intent is a
+            // START_STICKY restart and goes through restoreDraft() below.
+            ACTION_START -> {
+                hydrateSessionFromState()
+                startRecording()
+            }
             ACTION_PAUSE -> pauseRecording()
             ACTION_STOP -> stopRecording()
             null -> restoreDraft(resume = true)
@@ -106,22 +114,17 @@ class TrackRecordingService : LifecycleService() {
                 }
             }
             ACTION_RESTORE_DRAFT -> restoreDraft(resume = true)
-            ACTION_CHECK_DRAFT -> {
-                checkDraft()
-                // Nothing to recover: do not leave a sticky background service behind.
-                if (!stateHolder.uiState.value.draftAvailable) stopSelf()
-            }
+            ACTION_CHECK_DRAFT -> checkDraft()
         }
         return START_STICKY
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // Swipe-away kill: flush the draft synchronously so the ride survives, and leave a
-        // plain notification behind explaining how to continue (the foreground-service
-        // notification disappears together with the service).
-        val wasActive = stateHolder.uiState.value.state != TrackingState.IDLE
+        // Task swiped away: flush the draft synchronously so a later process death cannot lose
+        // the ride. The foreground service (and its single ongoing notification) keeps running
+        // and recording; "interrupted" is posted only when the app comes back and finds a draft
+        // without a live session.
         flushDraft()
-        if (wasActive && draftStore.hasDraft()) notifyDraftInterrupted()
         super.onTaskRemoved(rootIntent)
     }
 
@@ -157,18 +160,25 @@ class TrackRecordingService : LifecycleService() {
         super.onDestroy()
     }
 
-    /** Publishes whether a recoverable draft exists (called when the app opens). */
+    /**
+     * Publishes whether a recoverable draft exists (called when the app opens). A live ride is
+     * never stopped here: killing the service mid-recording is exactly what used to zero the
+     * next saved track. The "interrupted" notification appears only when a draft exists and no
+     * ride is running, i.e. after a real process break.
+     */
     private fun checkDraft() {
-        if (stateHolder.uiState.value.state != TrackingState.IDLE) return
+        if (stateHolder.uiState.value.state != TrackingState.IDLE) {
+            // The ride is alive: keep a single ongoing notification, no "interrupted" duplicate.
+            cancelDraftNotification()
+            return
+        }
         lifecycleScope.launch {
             val skip = proRepository.discardConfirmed.first()
-            if (skip) {
-                stateHolder.setDraftAvailable(false)
-                cancelDraftNotification()
-                return@launch
-            }
-            stateHolder.setDraftAvailable(draftStore.hasDraft())
-            if (stateHolder.uiState.value.draftAvailable) notifyDraftInterrupted()
+            val hasDraft = !skip && draftStore.hasDraft()
+            stateHolder.setDraftAvailable(hasDraft)
+            if (hasDraft) notifyDraftInterrupted() else cancelDraftNotification()
+            // Nothing to recover: do not leave a sticky background service behind.
+            if (!hasDraft) stopSelf()
         }
     }
 
@@ -181,16 +191,27 @@ class TrackRecordingService : LifecycleService() {
         if (stateHolder.uiState.value.state != TrackingState.IDLE) return
         points.clear()
         points.addAll(draft.points)
-        startTime = draft.startTimeMs
+        startTime = draft.startTimeMs.takeIf { it > 0L }
+            ?: draft.points.firstOrNull()?.timestamp
+            ?: 0L
         accumulatedMs = draft.accumulatedMs
         totalDistanceM = draft.totalDistanceM
-        trackName = draft.trackName
+        trackName = draft.trackName.ifEmpty { stateHolder.uiState.value.trackName }
         segmentStartMs = System.currentTimeMillis()
         startAnchor = draft.points.lastOrNull()?.let { it.lat to it.lon }
+        // A ride that the user had paused stays paused after recovery ("Продолжить" is an explicit
+        // tap); a ride that was rolling when it was cut keeps recording, as before.
+        val restoreState = if (draft.status == TrackingState.PAUSED) {
+            TrackingState.PAUSED
+        } else {
+            TrackingState.RECORDING
+        }
         stateHolder.update {
             it.copy(
-                state = TrackingState.PAUSED,
+                state = restoreState,
                 sessionId = draft.sessionId,
+                startTimeMs = startTime,
+                trackName = trackName,
                 photos = draft.photos,
                 capturePending = false,
                 points = draft.points.toList(),
@@ -202,15 +223,16 @@ class TrackRecordingService : LifecycleService() {
         }
         startForeground()
         updateNotification()
-        if (resume) {
+        if (resume && restoreState == TrackingState.RECORDING) {
             // One-tap continuation: the user picked Resume, so go straight back to
             // RECORDING instead of leaving the restored ride paused.
             recording = true
             lastPointTimeMs = System.currentTimeMillis()
             startTicker()
             requestLocationUpdates()
-            stateHolder.update { it.copy(state = TrackingState.RECORDING, speedMps = 0f) }
             updateNotification()
+        } else if (resume) {
+            android.util.Log.i("TrackService", "draft restored paused: awaiting an explicit resume")
         }
         androidx.core.app.NotificationManagerCompat.from(this).cancel(DRAFT_NOTIFICATION_ID)
         android.util.Log.i(
@@ -222,13 +244,88 @@ class TrackRecordingService : LifecycleService() {
         val st = stateHolder.uiState.value
         if (st.state == TrackingState.IDLE || st.sessionId.isEmpty()) return null
         val now = System.currentTimeMillis()
-        return TrackDraft(st.sessionId, trackName, startTime,
+        // The state is the authority for a recreated instance: fall back to it (and to the first
+        // recorded fix) instead of writing zeros into the draft.
+        val livePoints = points.ifEmpty { st.points }
+        val startMs = startTime.takeIf { it > 0L }
+            ?: st.startTimeMs.takeIf { it > 0L }
+            ?: livePoints.firstOrNull()?.timestamp
+            ?: now
+        return TrackDraft(
+            st.sessionId,
+            trackName.ifEmpty { st.trackName },
+            startMs,
             accumulatedMs + if (recording) now - segmentStartMs else 0L,
-            totalDistanceM, st.state, points.toList(), st.photos.toList(), now)
+            totalDistanceM.takeIf { it > 0f } ?: st.distanceMeters,
+            st.state,
+            livePoints.toList(),
+            st.photos.toList(),
+            now
+        )
     }
 
     private fun flushDraft() {
         draftSnapshot()?.let(draftStore::save)
+    }
+
+    /**
+     * Rebuilds this instance's session fields from the shared state (and from the draft when the
+     * state carries no start time yet). The ride belongs to the state holder, not to the service
+     * instance: Android may destroy and recreate the service at any moment, and the private
+     * fields would come back as zeros - which is what produced empty, 01.01.1970 rides.
+     */
+    private fun hydrateSessionFromState() {
+        if (startTime > 0L && points.isNotEmpty()) return
+        val st = stateHolder.uiState.value
+        if (st.state == TrackingState.IDLE) {
+            // No live session in memory: only an on-disk draft can still describe the ride.
+            adoptDraftIfNeeded()
+            return
+        }
+        val draft = if (st.sessionId.isNotEmpty() && (st.startTimeMs <= 0L || st.points.isEmpty())) {
+            // Trusted only when it belongs to this very session: an abandoned draft from an
+            // earlier ride must never leak into the current one.
+            draftStore.load()?.takeIf { it.sessionId == st.sessionId }
+        } else {
+            null
+        }
+        if (startTime <= 0L) {
+            startTime = st.startTimeMs.takeIf { it > 0L } ?: draft?.startTimeMs ?: 0L
+        }
+        if (trackName.isEmpty()) trackName = st.trackName.ifEmpty { draft?.trackName.orEmpty() }
+        if (points.isEmpty()) points.addAll(st.points.ifEmpty { draft?.points.orEmpty() })
+        if (totalDistanceM <= 0f) {
+            totalDistanceM = st.distanceMeters.takeIf { it > 0f } ?: draft?.totalDistanceM ?: 0f
+        }
+        if (accumulatedMs <= 0L) {
+            accumulatedMs = st.durationMs.takeIf { it > 0L } ?: draft?.accumulatedMs ?: 0L
+        }
+        startAnchor = points.lastOrNull()?.let { it.lat to it.lon }
+        segmentStartMs = System.currentTimeMillis()
+        lastPointTimeMs = segmentStartMs
+        if (st.state == TrackingState.RECORDING) recording = true
+        android.util.Log.i(
+            "TrackService",
+            "session hydrated: state=${st.state} points=${points.size} start=$startTime " +
+                "distance=${totalDistanceM.toInt()}m"
+        )
+    }
+
+    /** Adopts an on-disk draft when this instance has no session at all (Stop from the shade). */
+    private fun adoptDraftIfNeeded() {
+        if (points.isNotEmpty() || startTime > 0L) return
+        val draft = draftStore.load() ?: return
+        val session = stateHolder.uiState.value.sessionId
+        if (session.isNotEmpty() && draft.sessionId != session) return
+        points.addAll(draft.points)
+        startTime = draft.startTimeMs
+        accumulatedMs = draft.accumulatedMs
+        totalDistanceM = draft.totalDistanceM
+        trackName = draft.trackName
+        if (stateHolder.uiState.value.photos.isEmpty() && draft.photos.isNotEmpty()) {
+            stateHolder.update { it.copy(photos = draft.photos) }
+        }
+        android.util.Log.i("TrackService", "draft adopted: points=${points.size} start=$startTime")
     }
 
     private fun startRecording() {
@@ -238,7 +335,6 @@ class TrackRecordingService : LifecycleService() {
         val now = System.currentTimeMillis()
         if (currentState == TrackingState.IDLE) {
             points.clear()
-            stateHolder.update { it.copy(sessionId = java.util.UUID.randomUUID().toString(), photos = emptyList(), capturePending = false) }
             totalDistanceM = 0f
             lastSpeedMps = 0f
             accumulatedMs = 0L
@@ -248,6 +344,17 @@ class TrackRecordingService : LifecycleService() {
             startAnchor = stateHolder.uiState.value.lastFix
             val dateText = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(now))
             trackName = getString(R.string.track_name_prefix) + dateText
+            // The session - including its start time and name - lives in the shared state, so a
+            // recreated service instance can still save a correctly dated ride.
+            stateHolder.update {
+                it.copy(
+                    sessionId = java.util.UUID.randomUUID().toString(),
+                    startTimeMs = now,
+                    trackName = trackName,
+                    photos = emptyList(),
+                    capturePending = false
+                )
+            }
         } else {
             segmentStartMs = now
         }
@@ -260,6 +367,9 @@ class TrackRecordingService : LifecycleService() {
     }
 
     private fun pauseRecording() {
+        // A Pause from the notification shade can land on a freshly created instance: pull the
+        // session back before touching the accumulated time.
+        hydrateSessionFromState()
         if (!recording) return
         recording = false
         stopTicker()
@@ -281,11 +391,14 @@ class TrackRecordingService : LifecycleService() {
         // not discard the ride that is already being written.
         if (saving) return
         saving = true
+        // The ride may live in the shared state (or in the draft after a process restart): pull
+        // it back before deciding what to store.
+        hydrateSessionFromState()
         val photos = stateHolder.uiState.value.photos.toList()
-        // Captured before reset(): a session exists from the moment Start ran, even when the
-        // GPS never produced an acceptable fix.
+        // Captured before reset(): a session exists from the moment Start ran, even when the GPS
+        // never produced an acceptable fix, and also when only a draft survived.
         val hadSession = startTime > 0L || stateHolder.uiState.value.sessionId.isNotEmpty() ||
-            points.isNotEmpty() || photos.isNotEmpty()
+            points.isNotEmpty() || photos.isNotEmpty() || draftStore.hasDraft()
         if (recording) {
             accumulatedMs += System.currentTimeMillis() - segmentStartMs
             recording = false
@@ -295,10 +408,13 @@ class TrackRecordingService : LifecycleService() {
         val snapshot = points.toList()
         val end = System.currentTimeMillis()
         val distance = totalDistanceM
-        val duration = accumulatedMs
+        // Never store an epoch date: fall back to the first recorded fix, then to "now".
+        val start = startTime.takeIf { it > 0L }
+            ?: snapshot.firstOrNull()?.timestamp
+            ?: end
+        val duration = accumulatedMs.takeIf { it > 0L } ?: (end - start).coerceAtLeast(0L)
         // Light-hearted auto name from distance/duration; the user can rename in the summary.
         val name = com.alexander.routestory.utils.TripNames.generate(distance, duration, end)
-        val start = startTime
         points.clear()
         totalDistanceM = 0f
         lastSpeedMps = 0f
@@ -485,12 +601,16 @@ class TrackRecordingService : LifecycleService() {
     }
 
     private fun startForeground() {
+        // A live recording is the single source of truth: drop the "interrupted" copy so the
+        // shade never shows both notifications at once.
+        cancelDraftNotification()
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         )
     }
 
     private fun updateNotification() {
+        cancelDraftNotification()
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification())
     }
@@ -529,7 +649,10 @@ class TrackRecordingService : LifecycleService() {
             .setContentIntent(contentIntent)
             .addAction(0, pauseLabel, pauseIntent)
             .addAction(0, getString(R.string.action_stop), stopIntent)
+            // One persistent, non-swipeable notification for the whole ride.
             .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
             .build()
     }
 

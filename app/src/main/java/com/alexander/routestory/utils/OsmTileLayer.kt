@@ -50,9 +50,9 @@ object OsmTileLayer {
         // Mercator stretches Y by 1/cos(lat); keep both spans in Mercator degrees.
         val latStretch = 1.0 / max(0.2, cos(Math.toRadians(centerLat)))
         val spanMerc = max(lonSpanDeg, latSpanDeg * latStretch)
-        // Cap at 14: street-level 15-16 is visually noisy and costs extra tile downloads;
-        // 13-14 is enough for a live city map.
-        for (z in 14 downTo 4) {
+        // Fit cap 17 (pinch may still go to MAX_LIVE_ZOOM): a very short ride should not open
+        // glued to the maximum zoom.
+        for (z in 17 downTo 4) {
             if (spanMerc <= 360.0 / (1 shl z) * (tiles - 1) * 0.9) return z
         }
         return 4
@@ -121,7 +121,8 @@ object OsmTileLayer {
         tiles: Int = 3,
         requestedZoom: Int? = null
     ): Mosaic? = withContext(Dispatchers.IO) {
-        val zoom = requestedZoom?.coerceIn(4, 14) ?: pickZoom(centerLat, lonSpanDeg, latSpanDeg, tiles)
+        val zoom = requestedZoom?.coerceIn(4, MapTiles.MAX_LIVE_ZOOM)
+            ?: pickZoom(centerLat, lonSpanDeg, latSpanDeg, tiles)
         val n = 1 shl zoom
         val cx = floor(((centerLon + 180.0) / 360.0) * n).toInt().coerceIn(0, n - 1)
         val cy = floor(mercYTil(centerLat) * n).toInt().coerceIn(0, n - 1)

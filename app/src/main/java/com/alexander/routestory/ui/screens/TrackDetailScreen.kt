@@ -252,10 +252,13 @@ fun TrackDetailScreen(
                     }
                 }
                 // Sprint 27: button order is create video -> watch -> edit (Pro) -> delete.
-                // Free is pointed at Pro here instead of the old inline banner.
+                // Sprint 28: the ride that was just saved is editable by everyone until "Готово";
+                // from History (and after Done) editing goes back to Pro.
+                val canEditRide = isPro || isSummary
+                val canAddPhotos = canEditRide && (editMode || isSummary)
                 OutlinedButton(
                     onClick = {
-                        if (isPro) {
+                        if (canEditRide) {
                             editMode = !editMode
                         } else {
                             screenScope.launch {
@@ -268,7 +271,7 @@ fun TrackDetailScreen(
                 ) {
                     Text(stringResource(if (editMode) R.string.action_close else R.string.action_edit))
                 }
-                if (editMode) {
+                if (canAddPhotos) {
                     OutlinedButton(
                         onClick = {
                             pickPhotosLauncher.launch(

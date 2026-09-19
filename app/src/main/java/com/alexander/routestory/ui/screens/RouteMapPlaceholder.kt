@@ -701,14 +701,14 @@ private fun BoxScope.RouteMapCanvas(
             manualCenter = null
             locateFollow = true
             // Taxi-style strong zoom: street level, regardless of the previous gesture zoom.
-            userZoom = 14f
+            userZoom = MapTiles.TRACKING_ZOOM.toFloat()
         }
     }
     val target = if (locateFollow) currentPosition else null
     val viewX = manualCenter?.first ?: (((target?.second ?: centerLon) + 180.0) / 360.0)
     val viewY = manualCenter?.second ?: OsmTileLayer.mercYTiles(target?.first ?: centerLat)
     val zoom = userZoom ?: OsmTileLayer.pickZoom(centerLat, lonSpan, latSpan, 2).toFloat()
-    val tileZoom = kotlin.math.floor(zoom).toInt().coerceIn(4, 14)
+    val tileZoom = kotlin.math.floor(zoom).toInt().coerceIn(4, MapTiles.MAX_LIVE_ZOOM)
     // At integer zoom the viewport spans at most two tiles; a 3x3 grid covers its edges.
     val density = max(canvasSize.width, canvasSize.height).coerceAtLeast(1) / 512.0
     val worldPixels = 256.0 * Math.pow(2.0, zoom.toDouble()) * density
@@ -734,7 +734,8 @@ private fun BoxScope.RouteMapCanvas(
     }
     val transform by rememberUpdatedState<(Offset, Offset, Float) -> Unit>({ centroid, pan, factor ->
         val nextZoom = (zoom + (kotlin.math.ln(factor.toDouble()) / kotlin.math.ln(2.0)).toFloat())
-            .coerceIn(4f, 14f)
+            // Sprint 28: the ceiling is high enough for house-level detail (was 14).
+            .coerceIn(4f, MapTiles.MAX_LIVE_ZOOM.toFloat())
         val nextPixels = 256.0 * Math.pow(2.0, nextZoom.toDouble()) * density
         val dx = centroid.x - canvasSize.width / 2f
         val dy = centroid.y - canvasSize.height / 2f

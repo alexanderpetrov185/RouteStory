@@ -14,6 +14,12 @@ object MapTiles {
     /** Zoom level used while the camera follows the live position. */
     const val TRACKING_ZOOM = 16.0
 
+    /**
+     * Highest zoom the live Canvas renderer may use. OSM raster tiles are served up to z19;
+     * z18 gives house-level detail without going past what the tile policy allows.
+     */
+    const val MAX_LIVE_ZOOM = 18
+
     /** OSM raster tiles — the guaranteed free fallback for the live map. */
     const val OSM_TILE_URL = "https://tile.openstreetmap.org/%d/%d/%d.png"
 

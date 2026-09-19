@@ -5,6 +5,10 @@ enum class TrackingState { IDLE, RECORDING, PAUSED }
 data class TrackingUiState(
     val state: TrackingState = TrackingState.IDLE,
     val sessionId: String = "",
+    /** Wall-clock start of the ride; survives a service restart so saved dates stay real. */
+    val startTimeMs: Long = 0L,
+    /** Auto-generated ride name, kept with the session for the same reason. */
+    val trackName: String = "",
     val photos: List<TrackPhoto> = emptyList(),
     val capturePending: Boolean = false,
     val points: List<TrackPoint> = emptyList(),
