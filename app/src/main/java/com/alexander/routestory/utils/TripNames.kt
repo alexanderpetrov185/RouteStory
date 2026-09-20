@@ -1,9 +1,5 @@
 package com.alexander.routestory.utils
 
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-
 /** Light-hearted auto names for finished rides (Sprint 25-26). */
 object TripNames {
 

@@ -9,7 +9,6 @@ import android.graphics.Typeface
 import android.util.LruCache
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.utils.GeoUtils
-import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.max

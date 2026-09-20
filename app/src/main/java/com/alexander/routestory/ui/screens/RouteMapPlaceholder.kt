@@ -48,7 +48,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -59,7 +58,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.alexander.routestory.BuildConfig
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackPoint
 import com.alexander.routestory.utils.MapAvailability

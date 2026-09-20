@@ -53,7 +53,6 @@ class TrackRecordingService : LifecycleService() {
     @Inject lateinit var locationClient: FusedLocationProviderClient
 
     private var saving = false
-    private var draftJob: Job? = null
     private val points = mutableListOf<TrackPoint>()
     private var trackName = ""
     private var startTime = 0L

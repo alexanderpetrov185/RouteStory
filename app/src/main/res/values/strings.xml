@@ -14,7 +14,6 @@
     <string name="stat_time">Время</string>
     <string name="stat_speed">Скорость</string>
     <string name="track_name_prefix">Поездка </string>
-    <string name="ready_to_work">Готов к работе</string>
     <string name="history_title">История</string>
     <string name="history_button">История</string>
     <string name="detail_title">Детали маршрута</string>
@@ -23,7 +22,6 @@
     <string name="delete_confirm_title">Удалить маршрут?</string>
     <string name="delete_confirm_text">Удаление необратимо</string>
     <string name="export_gpx">Экспорт GPX</string>
-    <string name="export_done">Экспорт выполнен</string>
     <string name="export_error">Ошибка экспорта</string>
     <string name="stat_avg_speed">Средняя скорость</string>
     <string name="stat_max_speed">Макс. скорость</string>
@@ -36,7 +34,6 @@
     <string name="shift_minutes_label">Минут</string>
     <string name="action_apply">Применить</string>
     <string name="action_create_video">Создать видео</string>
-    <string name="action_create_video_pro">Создать видео (Pro)</string>
     <string name="action_add_photos">Добавить фото</string>
     <string name="video_generating">Создание видео…</string>
     <string name="video_done">Видео готово</string>
@@ -53,12 +50,10 @@
     <string name="action_activate_demo">Включить Pro (демо)</string>
     <string name="gps_disabled">GPS отключён</string>
     <string name="action_open_settings">Открыть настройки</string>
-    <string name="pro_banner">Pro: без водяного знака, видео до 60 сек</string>
     <string name="trip_summary">Итоги поездки</string>
     <string name="action_done">Готово</string>
     <string name="track_not_saved">Недостаточно данных для сохранения</string>
     <string name="track_missing">Маршрут не найден</string>
-    <string name="map_no_network">Карта появится при интернете. Маршрут пишется по GPS</string>
     <string name="map_no_net">Нет доступа к картам. Подключитесь к Wi-Fi или проверьте соединение. Карта кэшируется; для записи достаточно GPS.</string>
     <string name="map_unavailable">Карта недоступна на этом устройстве</string>
     <string name="map_my_location">Моё местоположение</string>
@@ -67,7 +62,6 @@
     <string name="loading_map">Загружаем карту…</string>
     <string name="gps_disabled_short">GPS выключен</string>
     <string name="action_enable_gps">Включить GPS</string>
-    <string name="action_try_again">Попробовать снова</string>
     <string name="offline_region">Нет доступа к картам. Подключитесь к Wi-Fi или проверьте соединение. Карта кэшируется; для записи достаточно GPS.</string>
     <string name="action_grant_location">Разрешить геолокацию</string>
     <string name="photo_action">Фото</string>
@@ -82,16 +76,12 @@
     <string name="draft_notification_text">Данные сохранены. Откройте приложение, чтобы продолжить маршрут.</string>
     <string name="draft_dont_ask">Не спрашивать снова</string>
     <string name="photo_error">Не удалось добавить фото</string>
-    <string name="photo_error_camera">Камера не сохранила фото</string>
-    <string name="photo_preview_failed">Не удалось показать фото</string>
     <string name="action_edit">Изменить</string>
     <string name="action_watch_video">Смотреть видео</string>
     <string name="action_watch_again">Смотреть снова</string>
     <string name="pro_required_edit">Редактирование маршрута доступно в RouteStory Pro</string>
     <string name="battery_title">Фоновая работа</string>
-    <string name="battery_text">Чтобы запись не прерывалась системой, разрешите RouteStory работу в фоне без ограничений батареи.</string>
     <string name="action_open_battery_settings">Настройки</string>
-    <string name="action_later">Позже</string>
     <string name="action_rename">Переименовать</string>
     <string name="home_subtitle">Записывайте маршрут и превращайте его в видео</string>
 </resources>

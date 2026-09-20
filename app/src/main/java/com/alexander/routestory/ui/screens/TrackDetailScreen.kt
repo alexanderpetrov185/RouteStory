@@ -17,7 +17,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,7 +28,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -251,27 +249,9 @@ fun TrackDetailScreen(
                         )
                     }
                 }
-                // Sprint 27: button order is create video -> watch -> edit (Pro) -> delete.
-                // Sprint 28: the ride that was just saved is editable by everyone until "Готово";
-                // from History (and after Done) editing goes back to Pro.
-                val canEditRide = isPro || isSummary
-                val canAddPhotos = canEditRide && (editMode || isSummary)
-                OutlinedButton(
-                    onClick = {
-                        if (canEditRide) {
-                            editMode = !editMode
-                        } else {
-                            screenScope.launch {
-                                snackbarHostState.showSnackbar(context.getString(R.string.pro_required_edit))
-                            }
-                            onOpenPro()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(stringResource(if (editMode) R.string.action_close else R.string.action_edit))
-                }
-                if (canAddPhotos) {
+                // Summary: no "Изменить" button; "Добавить фото" is directly visible for everyone.
+                // History/detail keeps the Pro-gated edit toggle (unchanged below).
+                if (isSummary) {
                     OutlinedButton(
                         onClick = {
                             pickPhotosLauncher.launch(
@@ -281,6 +261,37 @@ fun TrackDetailScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(stringResource(R.string.action_add_photos))
+                    }
+                } else {
+                    // Sprint 27: button order is create video -> watch -> edit (Pro) -> delete.
+                    val canEditRide = isPro
+                    val canAddPhotos = canEditRide && editMode
+                    OutlinedButton(
+                        onClick = {
+                            if (canEditRide) {
+                                editMode = !editMode
+                            } else {
+                                screenScope.launch {
+                                    snackbarHostState.showSnackbar(context.getString(R.string.pro_required_edit))
+                                }
+                                onOpenPro()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(if (editMode) R.string.action_close else R.string.action_edit))
+                    }
+                    if (canAddPhotos) {
+                        OutlinedButton(
+                            onClick = {
+                                pickPhotosLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.action_add_photos))
+                        }
                     }
                 }
                 OutlinedButton(
