@@ -1,5 +1,6 @@
 package com.alexander.routestory.ui.screens
 
+import android.graphics.Bitmap
 import android.os.Build
 import android.util.Log
 import android.widget.FrameLayout
@@ -50,6 +51,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -96,6 +98,9 @@ private const val ROUTE_WIDTH = 5f
 private const val MARKER_RADIUS = 6f
 private const val MARKER_STROKE = 2f
 private const val TAP_RADIUS_PX = 30f
+/** Raster size of the camera glyph and its size on screen (px). */
+private const val PHOTO_GLYPH_PX = 48f
+private const val PHOTO_GLYPH_TARGET_PX = 24f
 private const val BOUNDS_PADDING_PX = 64
 private const val STYLE_TIMEOUT_MS = 8_000L
 
@@ -662,6 +667,18 @@ private fun BoxScope.RouteMapCanvas(
 ) {
     val context = LocalContext.current
     val markerColor = MaterialTheme.colorScheme.tertiary
+    // Photo points are camera badges. The vector is rasterized once (drawImage is used for the
+    // map mosaic too, so the marker path stays on the same, version-stable API).
+    val photoGlyph = remember {
+        val px = PHOTO_GLYPH_PX.toInt()
+        val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+        ContextCompat.getDrawable(context, R.drawable.ic_photo_camera)?.let { drawable ->
+            drawable.setBounds(0, 0, px, px)
+            drawable.setTint(android.graphics.Color.WHITE)
+            drawable.draw(android.graphics.Canvas(bitmap))
+        }
+        bitmap.asImageBitmap()
+    }
     val hasRoute = points.size >= 2
 
     // Gentle pulse for the "me" marker (0 -> 1 -> 0).
@@ -801,13 +818,18 @@ private fun BoxScope.RouteMapCanvas(
             drawPath(path, color = Color(0xFF2196F3), style = Stroke(width = 7f))
         }
         photoPositions.forEach { position ->
-                    val offset = project(position.first, position.second, size.width, size.height)
-                    // Bright pin: dark halo + amber disc + white core, readable on any tile.
-                    drawCircle(Color(0x99000000), radius = 17f, center = offset)
-                    drawCircle(markerColor, radius = 14f, center = offset)
-                    drawCircle(Color(0xFFFFC107), radius = 8f, center = offset)
-                    drawCircle(androidx.compose.ui.graphics.Color.White, radius = 4f, center = offset)
-                }
+            val offset = project(position.first, position.second, size.width, size.height)
+            // Camera badge: dark halo + brand disc + a white camera glyph; reads as "a photo
+            // was taken here" on any tile imagery and stays visible next to the route line.
+            drawCircle(Color(0x99000000), radius = 19f, center = offset)
+            drawCircle(markerColor, radius = 16f, center = offset)
+            withTransform({
+                translate(offset.x - PHOTO_GLYPH_TARGET_PX / 2f, offset.y - PHOTO_GLYPH_TARGET_PX / 2f)
+                scale(PHOTO_GLYPH_TARGET_PX / PHOTO_GLYPH_PX, PHOTO_GLYPH_TARGET_PX / PHOTO_GLYPH_PX, Offset.Zero)
+            }) {
+                drawImage(photoGlyph)
+            }
+        }
         // Live GPS fix: bright blue, larger, with a white ring and a subtle pulse so it
         // reads as "current position" on any backdrop.
         if (currentPosition != null) {

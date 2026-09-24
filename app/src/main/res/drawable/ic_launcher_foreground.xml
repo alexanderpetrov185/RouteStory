@@ -3,34 +3,26 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- RouteStory: one centred route-knot mark on dark slate. Not a Maps pin. -->
-    <path
-        android:fillColor="#10151F"
-        android:pathData="M0,0h108v108h-108z" />
+    <!-- RouteStory: one calm A→B road, start and finish badges. Two brand colors only.
+         All content stays inside the 66dp adaptive-icon safe zone (radius ~33 from centre),
+         so round launcher masks never clip the badges. -->
     <path
         android:fillColor="#00000000"
-        android:pathData="M28,74 C28,58 40,60 48,52 C56,44 52,36 42,36"
-        android:strokeWidth="6"
+        android:pathData="M37,71 C48,64 46,52 54,49 C62,46 60,44 71,37"
+        android:strokeWidth="7"
         android:strokeColor="#5C8DEF"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
     <path
-        android:fillColor="#00000000"
-        android:pathData="M42,36 C50,28 62,30 66,38 C70,46 64,52 66,60 C68,68 76,68 80,62"
-        android:strokeWidth="6"
-        android:strokeColor="#FFA726"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round" />
-    <path
         android:fillColor="#FFFFFF"
-        android:pathData="M28,74 m-9,0 a9,9 0 1,0 18,0 a9,9 0 1,0 -18,0" />
+        android:pathData="M37,71 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0" />
     <path
         android:fillColor="#5C8DEF"
-        android:pathData="M28,74 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0" />
+        android:pathData="M37,71 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M80,62 m-10,0 a10,10 0 1,0 20,0 a10,10 0 1,0 -20,0" />
+        android:pathData="M71,37 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0" />
     <path
-        android:fillColor="#E53935"
-        android:pathData="M80,62 m-5.5,0 a5.5,5.5 0 1,0 11,0 a5.5,5.5 0 1,0 -11,0" />
+        android:fillColor="#FFA726"
+        android:pathData="M71,37 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0" />
 </vector>

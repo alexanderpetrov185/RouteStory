@@ -1,4 +1,4 @@
-﻿<resources>
+<resources>
     <string name="app_name">RouteStory</string>
     <string name="tracking_title">Запись маршрута</string>
     <string name="action_start">Начать запись</string>
@@ -21,35 +21,41 @@
     <string name="action_cancel">Отмена</string>
     <string name="delete_confirm_title">Удалить маршрут?</string>
     <string name="delete_confirm_text">Удаление необратимо</string>
-    <string name="export_gpx">Экспорт GPX</string>
     <string name="export_error">Ошибка экспорта</string>
     <string name="stat_avg_speed">Средняя скорость</string>
     <string name="stat_max_speed">Макс. скорость</string>
     <string name="stat_points">Точки</string>
     <string name="empty_history">Нет сохранённых маршрутов</string>
-    <string name="action_add_photo">Добавить фото</string>
     <string name="photos_title">Фото</string>
     <string name="action_delete_photo">Удалить фото</string>
-    <string name="action_shift_time">Сдвинуть время</string>
-    <string name="shift_minutes_label">Минут</string>
-    <string name="action_apply">Применить</string>
     <string name="action_create_video">Создать видео</string>
+    <string name="action_recreate_video">Пересоздать видео</string>
+    <string name="recreate_confirm_title">Пересоздать видео?</string>
+    <string name="recreate_confirm_text">Старое видео будет перезаписано.</string>
+    <string name="video_sfx_toggle">Оставить звуковые эффекты</string>
+    <string name="video_sfx_toggle_full">Оставить звуковые эффекты фото и скорости</string>
+
     <string name="action_add_photos">Добавить фото</string>
     <string name="video_generating">Создание видео…</string>
-    <string name="video_done">Видео готово</string>
+    <string name="video_preparing">Подготовка видео…</string>
     <string name="action_save">Сохранить</string>
     <string name="action_share">Поделиться</string>
     <string name="action_close">Закрыть</string>
     <string name="video_error">Ошибка генерации видео</string>
+    <string name="video_notif_channel_name">Создание видео</string>
+    <string name="video_notif_done_channel_name">Готовые видео</string>
+    <string name="video_notif_title">RouteStory</string>
+    <string name="video_notif_preparing">Подготовка видео…</string>
+    <string name="video_notif_running">Создание видео… %1$d%%</string>
+    <string name="video_notif_done">Видео готово</string>
     <string name="pro_title">RouteStory Pro</string>
     <string name="pro_active">Pro активен</string>
     <string name="pro_benefit_watermark">Без водяного знака</string>
-    <string name="pro_benefit_duration">Видео до 60 секунд</string>
+    <string name="pro_benefit_duration">Видео до 90 секунд</string>
     <string name="pro_benefit_photos">Все фото в видео</string>
     <string name="action_buy_pro">Купить Pro</string>
     <string name="action_activate_demo">Включить Pro (демо)</string>
     <string name="gps_disabled">GPS отключён</string>
-    <string name="action_open_settings">Открыть настройки</string>
     <string name="trip_summary">Итоги поездки</string>
     <string name="action_done">Готово</string>
     <string name="track_not_saved">Недостаточно данных для сохранения</string>
@@ -76,12 +82,14 @@
     <string name="draft_notification_text">Данные сохранены. Откройте приложение, чтобы продолжить маршрут.</string>
     <string name="draft_dont_ask">Не спрашивать снова</string>
     <string name="photo_error">Не удалось добавить фото</string>
-    <string name="action_edit">Изменить</string>
     <string name="action_watch_video">Смотреть видео</string>
-    <string name="action_watch_again">Смотреть снова</string>
+    <string name="action_pick_music">Выбрать музыку</string>
+    <string name="music_chosen">Музыка: %1$s</string>
     <string name="pro_required_edit">Редактирование маршрута доступно в RouteStory Pro</string>
-    <string name="battery_title">Фоновая работа</string>
-    <string name="action_open_battery_settings">Настройки</string>
+    <string name="action_start_video">Приступить к созданию</string>
+    <string name="music_default">Музыка: по умолчанию</string>
+
+
     <string name="action_rename">Переименовать</string>
     <string name="home_subtitle">Записывайте маршрут и превращайте его в видео</string>
 </resources>

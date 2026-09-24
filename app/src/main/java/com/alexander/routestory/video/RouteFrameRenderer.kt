@@ -20,14 +20,19 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
 
     private val bgPaint = Paint().apply { color = Color.rgb(22, 28, 38) }
     private val dimPaint = Paint().apply { color = Color.argb(35, 10, 14, 20) }
-    /** Satellite tiles lean grey; a modest brightness/contrast lift makes them pop. */
+    /**
+     * Sprint 40: ONE brightness lift for every backdrop layer (overview and follow).
+     * The old split (1.28x lift for the follow layer, 0.85x downgrade for the overview)
+     * made the picture flip between "yellow" and "white" whenever the layer switched.
+     * 1.12x / +6 keeps satellite imagery readable without the blown-out look.
+     */
     private val brightenPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
         colorFilter = android.graphics.ColorMatrixColorFilter(
             android.graphics.ColorMatrix(
                 floatArrayOf(
-                    1.18f, 0f, 0f, 0f, 8f,
-                    0f, 1.18f, 0f, 0f, 8f,
-                    0f, 0f, 1.18f, 0f, 8f,
+                    1.12f, 0f, 0f, 0f, 6f,
+                    0f, 1.12f, 0f, 0f, 6f,
+                    0f, 0f, 1.12f, 0f, 6f,
                     0f, 0f, 0f, 1f, 0f
                 )
             )
@@ -52,6 +57,17 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     }
     private val startPointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(56, 209, 96) }
     private val finishPointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(229, 57, 53) }
+    /** Sprint 41: white play triangle inside the start disc (start != "me"). */
+    private val startGlyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    /** Sprint 41: checkered finish flag cells. */
+    private val flagWhitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val flagBlackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(24, 24, 24) }
+    private val flagPolePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(240, 240, 240)
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        strokeCap = Paint.Cap.ROUND
+    }
     private val dotHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         // Dark halo keeps the marker readable on light and dark imagery.
         color = Color.argb(150, 0, 0, 0)
@@ -62,7 +78,15 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         style = Paint.Style.STROKE
         strokeWidth = 4f
     }
-    private val photoDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 193, 7) }
+    /** Photo badge disc: the live map uses MaterialTheme.colorScheme.tertiary (Pink40). */
+    private val photoDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(125, 82, 96) }
+    private val peakPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(255, 235, 59) }
+    private val peakTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 30f
+        typeface = Typeface.DEFAULT_BOLD
+        setShadowLayer(6f, 0f, 2f, Color.BLACK)
+    }
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textSize = 44f
@@ -117,23 +141,108 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private companion object {
         /** Brand line shown on the intro and outro cards. */
         const val APP_NAME = "RouteStory"
+        /** Light 3D: camera pitch, corner-fill zoom and perspective distance (px). */
+        const val TILT_DEGREES = 30f
+        const val TILT_SCALE = 1.28f
+        const val PERSPECTIVE_Z = 1800f
     }
 
-    /** Source bitmap the cached brightened copy was built from. */
-    private var brightenedSource: Bitmap? = null
-    private var brightened: Bitmap? = null
+    /** Sprint 34: cross-fade paint for the close-up background layer. */
+    private val crossFadePaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     /**
-     * The brightness lift is applied ONCE per background bitmap (not per frame):
-     * a 640x360 color-matrix pass on 180 frames is pure waste.
+     * Sprint 41: brightened copies cached per source bitmap in a small LRU
+     * (overview + up to 6 follow segments alternate during MOVE; a single slot
+     * re-filtered the full frame every other draw).
+     */
+    private val brightenCache = object : LruCache<Bitmap, Bitmap>(8) {
+        override fun sizeOf(key: Bitmap, value: Bitmap): Int = 1
+    }
+
+    /** Light 3D: one perspective matrix, rebuilt only when the frame size changes. */
+    private var tiltKey = -1
+    private var tiltAmountCached = -1f
+    private var tiltMatrix = android.graphics.Matrix()
+
+    /**
+     * Perspective matrix for the map group: rotateX around the frame centre, then scale up a
+     * little so the trapezoid corners stay covered. Cheap: computed once per export.
+     * [amount] 0..1 animates the tilt-in (TILT phase); marker still stands.
+     */
+    private fun tiltFor(w: Float, h: Float, amount: Float = 1f): android.graphics.Matrix {
+        val a = amount.coerceIn(0f, 1f)
+        val key = ((w.toInt() shl 16) xor h.toInt()) + (a * 100).toInt() * 1_000_003
+        if (key != tiltKey || tiltAmountCached != a) {
+            tiltKey = key
+            tiltAmountCached = a
+            val m = android.graphics.Matrix()
+            android.graphics.Camera().apply {
+                setLocation(0f, 0f, -PERSPECTIVE_Z)
+                rotateX(TILT_DEGREES * a)
+                getMatrix(m)
+            }
+            m.preTranslate(-w / 2f, -h / 2f)
+            m.postTranslate(w / 2f, h / 2f)
+            m.postScale(TILT_SCALE, TILT_SCALE, w / 2f, h / 2f)
+            tiltMatrix = m
+        }
+        return tiltMatrix
+    }
+
+    /**
+     * The brightness lift and the sharpening pass are applied ONCE per background bitmap (not
+     * per frame): a full-frame color-matrix + unsharp pass on 360 frames is pure waste.
+     * Sharpen matters because the satellite mosaic is scaled up to the video frame and bilinear
+     * filtering softens it.
+     *
+     * Sprint 41: one lift and a small per-source LRU for both layers (overview and
+     * follow segments). Every layer is filtered with the same [brightenPaint], so an
+     * update can never flip the picture between two different tints.
      */
     private fun brightenOnce(source: Bitmap): Bitmap {
-        brightenedSource?.let { if (it === source) brightened?.let { out -> return out } }
-        val out = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
-        Canvas(out).drawBitmap(source, 0f, 0f, brightenPaint)
-        brightenedSource = source
-        brightened = out
+        brightenCache.get(source)?.let { return it }
+        val lit = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        Canvas(lit).drawBitmap(source, 0f, 0f, brightenPaint)
+        val out = if (source.width < 3 || source.height < 3) lit else sharpen(lit)
+        brightenCache.put(source, out)
         return out
+    }
+
+    /** 3x3 unsharp mask (kernel [0,-1,0, -1,5,-1, 0,-1,0]); one pass per export. */
+    private fun sharpen(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val pixels = IntArray(w * h)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        val out = IntArray(w * h)
+        for (y in 0 until h) {
+            val row = y * w
+            val up = if (y > 0) row - w else row
+            val down = if (y < h - 1) row + w else row
+            for (x in 0 until w) {
+                val left = pixels[row + if (x > 0) x - 1 else x]
+                val right = pixels[row + if (x < w - 1) x + 1 else x]
+                out[row + x] = sharpenPixel(pixels[row + x], left, right, pixels[up + x], pixels[down + x])
+            }
+        }
+        val dst = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        dst.setPixels(out, 0, w, 0, 0, w, h)
+        return dst
+    }
+
+    /** Per-channel unsharp with clamping; alpha is preserved. */
+    private fun sharpenPixel(center: Int, left: Int, right: Int, up: Int, down: Int): Int {
+        var rgb = 0
+        for (shift in intArrayOf(16, 8, 0)) {
+            val c = (center shr shift) and 0xFF
+            // Sprint 40: gentler unsharp (3*c - neighbours/2 instead of 5*c - 4
+            // neighbours): the old kernel plus the 1.28x lift looked overcooked.
+            val sum = ((left shr shift) and 0xFF) + ((right shr shift) and 0xFF) +
+                ((up shr shift) and 0xFF) + ((down shr shift) and 0xFF)
+            val value = (c * 6 - sum) / 2
+            rgb = rgb or (value.coerceIn(0, 255) shl shift)
+        }
+        return (center and -0x1000000) or rgb
     }
     private val photoCache = object : LruCache<String, Bitmap>(12) {
         override fun sizeOf(key: String, value: Bitmap): Int = 1
@@ -210,11 +319,94 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     }
 
     /**
-     * Delegates to [MapSnapshotProvider.cropInfo] — the single source of truth for
+     * Delegates to [MapSnapshotProvider.cropInfo] вЂ” the single source of truth for
      * the zoom / crop used by both the video backdrop and this overlay.
      */
     private fun cropInfo(track: Track, w: Int, h: Int): MapSnapshotProvider.CropInfo? =
         MapSnapshotProvider.cropInfo(track, w, h)
+
+    /**
+     * Sprint 40A: nearest prebuilt follow segment for this frame.
+     * Same distance progress as the marker (no drift between tiles and route).
+     */
+    /** Sprint 40: index/state of the nearest prebuilt follow segment. */
+    private fun followSegmentIndex(
+        frame: Int,
+        timeline: RouteVideoTimeline?,
+        segments: List<MapSnapshotProvider.FollowSegment>
+    ): Int {
+        if (segments.isEmpty() || timeline == null) return -1
+        // Sprint 41: hold back the sharp segment until the camera is near its
+        // target zoom (see FOLLOW_SWITCH) so the rect can cover the frame.
+        if (timeline.followBlend(frame) < FOLLOW_SWITCH) return -1
+        val progress = timeline.mapProgress(frame).coerceIn(0f, 1f)
+        return ((progress * segments.size).toInt()).coerceIn(0, segments.size - 1)
+    }
+
+    private fun pickFollowSegment(
+        frame: Int,
+        timeline: RouteVideoTimeline?,
+        segments: List<MapSnapshotProvider.FollowSegment>
+    ): MapSnapshotProvider.FollowSegment? {
+        val idx = followSegmentIndex(frame, timeline, segments)
+        if (idx < 0) return null
+        return segments[idx].takeIf { it.bitmap != null }
+    }
+
+    /** Select the ready window whose geographic rect actually contains the camera centre. */
+    private fun containingFollowIndex(
+        progress: Float,
+        segments: List<MapSnapshotProvider.FollowSegment>,
+        overview: MapSnapshotProvider.CropInfo?,
+        centerX: Float,
+        centerY: Float,
+        w: Float,
+        h: Float
+    ): Int {
+        if (segments.isEmpty() || overview == null) return -1
+        val containing = segments.indices.filter { index ->
+            val rect = MapSnapshotProvider.followRectInOverview(segments[index].info, overview, w.toInt(), h.toInt())
+            rect != null && centerX >= rect[0] && centerX <= rect[2] &&
+                centerY >= rect[1] && centerY <= rect[3]
+        }
+        if (containing.isNotEmpty()) {
+            return containing.minByOrNull { candidate ->
+                kotlin.math.abs(candidate - (progress * segments.size).toInt())
+            } ?: -1
+        }
+        // Adaptive windows must cover MOVE. This is an error signal, not a visual fallback.
+        android.util.Log.e("MapSnapshot", "follow camera outside all prepared windows progress=$progress")
+        return -1
+    }
+
+    /**
+     * Sprint 40A: follow-segment Mercator projection from the same marker-centred
+     * crop the provider stitched. Route/marker/photo pins reuse this projection,
+     * so they cannot slide off the tiles.
+     */
+    /**
+     * Sprint 40: the follow segment drawn inside the overview frame.
+     * The geometry itself lives in [MapSnapshotProvider.followRectInOverview]
+     * (pure, unit-tested); this wrapper only converts it to a RectF.
+     */
+    private fun followRectInOverview(
+        seg: MapSnapshotProvider.CropInfo,
+        ov: MapSnapshotProvider.CropInfo?,
+        w: Float,
+        h: Float
+    ): android.graphics.RectF? {
+        if (ov == null) return null
+        val r = MapSnapshotProvider.followRectInOverview(seg, ov, w.toInt(), h.toInt()) ?: return null
+        return android.graphics.RectF(r[0], r[1], r[2], r[3])
+    }
+
+    private fun buildCloseUpProjection(
+        track: Track,
+        w: Float,
+        h: Float
+    ): MercatorProjection? {
+        return null
+    }
 
     private fun drawSchematicGrid(canvas: Canvas, w: Float, h: Float) {
         val step = min(w, h) / 8f
@@ -233,6 +425,54 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private var cachedTimelineTrack: Track? = null
     private var cachedTimelineFrameCount = -1
     private var cachedTimeline: RouteVideoTimeline? = null
+    private var camDrawable: android.graphics.drawable.Drawable? = null
+
+    /**
+     * Sprint 41: vector checkered finish flag - pole up from the route end plus a
+     * 3x2 checker board. Drawn in the same projection as the overlay, so it sticks
+     * to the last track point through zoom/tilt. Sizes scale with the current
+     * camera zoom (they are project()-relative, ~30px at 1x).
+     */
+    private fun drawCheckeredFlag(canvas: Canvas, x: Float, y: Float) {
+        val poleH = 54f
+        val cell = 10f
+        val cols = 3
+        val rows = 2
+        val poleX = x + 14f
+        val top = y - poleH
+        canvas.drawLine(poleX, y, poleX, top, flagPolePaint)
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val paint = if ((r + c) % 2 == 0) flagWhitePaint else flagBlackPaint
+                val l = poleX + c * cell
+                val t = top + r * cell
+                canvas.drawRect(l, t, l + cell, t + cell, paint)
+            }
+        }
+        // Thin outline keeps the flag readable on bright satellite imagery.
+        val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(160, 0, 0, 0)
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+        }
+        canvas.drawRect(poleX, top, poleX + cols * cell, top + rows * cell, outline)
+    }
+
+    /** White camera glyph for photo badges (same icon as the live map). */
+    private fun cameraGlyph(): android.graphics.drawable.Drawable {
+        camDrawable?.let { return it }
+        val px = 48
+        val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val body = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        // Camera body + top bump + lens: reads as a camera at 24 px on the map.
+        c.drawRect(px * 0.16f, px * 0.34f, px * 0.84f, px * 0.78f, body)
+        c.drawRect(px * 0.34f, px * 0.22f, px * 0.58f, px * 0.36f, body)
+        c.drawCircle(px / 2f, px * 0.56f, px * 0.16f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(33, 150, 243) })
+        val d = android.graphics.drawable.BitmapDrawable(null, bmp)
+        camDrawable = d
+        return d
+    }
 
     /** Timeline is rebuilt only when a different track arrives, never per frame. */
     private fun timelineFor(track: Track, frameCount: Int): RouteVideoTimeline {
@@ -251,9 +491,13 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         frameCount: Int,
         canvas: Canvas,
         background: Bitmap? = null,
+        followSegments: List<MapSnapshotProvider.FollowSegment> = emptyList(),
         timeline: RouteVideoTimeline? = null
     ) {
         val tl = timeline ?: timelineFor(track, frameCount)
+        val preliminaryFollow = if (tl.followBlend(frame) >= FOLLOW_SWITCH && followSegments.isNotEmpty())
+            followSegments[followSegmentIndex(frame, tl, followSegments).coerceAtLeast(0)].bitmap else null
+        val closeUpBackground = preliminaryFollow
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
         // Sprint 24: fixed intro / outro cards around the map part.
@@ -261,21 +505,25 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             drawIntro(track, tl, frame, canvas, w, h, background)
             return
         }
-        if (tl.isOutro(frame)) {
+        if (tl.isOutroCard(frame)) {
             drawOutro(tl, frame, canvas, w, h)
             return
         }
-        if (background != null) {
-            val bright = brightenOnce(background)
-            val src = android.graphics.Rect(0, 0, bright.width, bright.height)
-            val dst = android.graphics.RectF(0f, 0f, w, h)
-            canvas.drawBitmap(bright, src, dst, null)
-            canvas.drawRect(0f, 0f, w, h, dimPaint)
-        } else {
+        // Dark base under the tilted map, so the perspective corners never show through.
+        canvas.drawRect(0f, 0f, w, h, bgPaint)
+        canvas.save()
+        // TILT phase: tilt 0->30 deg, marker stands. ZOOM phase: navigator zoom to start.
+        canvas.concat(tiltFor(w, h, tl.tiltAmount(frame)))
+        // Sprint 40: ONE backdrop pass for every frame. The camera pass below draws
+        // the overview and (in MOVE) the sharp follow sub-rect with the same paint;
+        // without tiles the schematic grid is used instead.
+        val hasBgs = background != null || closeUpBackground != null
+        if (!hasBgs) {
             canvas.drawRect(0f, 0f, w, h, bgPaint)
             drawSchematicGrid(canvas, w, h)
         }
         if (track.points.isEmpty()) {
+            canvas.restore()
             drawTexts(track, canvas, w, h)
             return
         }
@@ -286,12 +534,21 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             canvas.drawCircle(centerX, centerY, 22f, dotHaloPaint)
             canvas.drawCircle(centerX, centerY, 15f, dotPaint)
             canvas.drawCircle(centerX, centerY, 15f, dotRingPaint)
+            canvas.restore()
             drawTexts(track, canvas, w, h)
             return
         }
 
         // Use Mercator projection that aligns with the map background when one is present.
+        // Sprint 40A: follow frames use the nearest prebuilt segment projection
+        // (same marker-centred crop the provider stitched); overview otherwise.
+        // Sprint 40: overlay is ALWAYS the overview projection for the whole MOVE.
+        // Follow tiles are a positioned sub-rectangle inside these same coordinates,
+        // never a second coordinate space (this was the map "drift" root cause).
         val mercator = if (background != null) buildProjection(track, w, h) else null
+        val follow = tl.followBlend(frame)
+        val overviewCrop = cropInfo(track, w.toInt(), h.toInt())
+        val proj = mercator
 
         val minLat = track.points.minOf { it.lat }
         val maxLat = track.points.maxOf { it.lat }
@@ -301,7 +558,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val lonRange = max(maxLon - minLon, 1e-6)
 
         fun baseProject(lat: Double, lon: Double): Pair<Float, Float> {
-            mercator?.let { p ->
+            proj?.let { p ->
                 return p.x(lon) to p.y(lat)
             }
             // Fallback: linear projection (no map background).
@@ -326,32 +583,80 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val next = track.points[index + 1]
         val curLat = cur.lat + (next.lat - cur.lat) * frac
         val curLon = cur.lon + (next.lon - cur.lon) * frac
-        val blend = RouteVideoMotion.followBlend(progress)
-        val cameraZoom = 1f + blend
+
+        // Sprint 34: smooth camera follow (was binary isMarkerHeld).
+        // follow: 0 at tilt end -> 1 across ZOOM -> 1 through MOVE.
+        // zoomRamp: 1.0 -> 4.0 over ZOOM.
+        // cameraZoom = zoomRamp + 0.6 * follow:
+        //   at ZOOM start: zoomRamp=1.0, follow~0 -> camZoom~1.0
+        //   at ZOOM end:   zoomRamp=4.0, follow=1 -> camZoom=4.6  (+15% vs old 4.0)
+        //   during MOVE:   zoomRamp=4.0, follow=1 -> camZoom=4.6  (constant, no jump)
+        // Sprint 36: fixed camera zoom (no additive follow term). SPRINT 35's
+        // zoomRamp + 0.6 * follow pushed the close-up to 4.6x, re-scaling the
+        // bitmap every frame and blurring it. A constant 4.0x keeps the close-up
+        // crisp while the camera still glides onto the marker during ZOOM.
+        val boost = tl.peakBoost(frame)
+        // Sprint 41: the MOVE camera zoom targets a fixed geo window around the
+        // marker (followCameraZoom), so long rides no longer pull away; short
+        // rides keep the classic 4x. ZOOM still glides 1 -> target smoothly.
+        val zoomOut = if (tl.isOutro(frame)) tl.outroZoomOut(frame) else 0f
+        val camTarget = overviewCrop?.let { MapSnapshotProvider.followCameraZoom(it) } ?: 6f
+        val zoomRamp = (1f + (camTarget - 1f) * tl.zoomAmount(frame)) * (1f + 0.35f * boost)
+        val cameraZoom = zoomRamp * (1f - zoomOut) + zoomOut
         val (baseX, baseY) = baseProject(curLat, curLon)
-        // Clamp the follow window to the downloaded overview; no empty edges.
-        val centerX = (w / 2 + (baseX - w / 2) * blend)
-            .coerceIn(w / (2 * cameraZoom), w - w / (2 * cameraZoom))
-        val centerY = (h / 2 + (baseY - h / 2) * blend)
-            .coerceIn(h / (2 * cameraZoom), h - h / (2 * cameraZoom))
+        // Sprint 36: the camera centre is the marker position itself - recomputed
+        // every frame, no lerp toward screen centre, no clamp to the overview edges.
+        // In the ZOOM phase it glides from the frame centre onto the start marker;
+        // in MOVE (follow >= 0.5) it is locked to the marker so the camera can
+        // never drift away.
+        val centerX = if (follow >= 0.5f) baseX else (w / 2 + (baseX - w / 2) * follow)
+        val centerY = if (follow >= 0.5f) baseY else (h / 2 + (baseY - h / 2) * follow)
         fun project(lat: Double, lon: Double): Pair<Float, Float> {
             val (x, y) = baseProject(lat, lon)
             return (x - centerX) * cameraZoom + w / 2 to (y - centerY) * cameraZoom + h / 2
         }
-        if (background != null) {
+        // Sprint 40A: one background per frame. Hard switch at followBlend >= 0.5:
+        // the follow segment is shown whenever the camera has zoomed in far enough,
+        // otherwise the overview. No per-frame alpha cross-fade of two stacked
+        // bitmaps - a single drawBitmap keeps the follow crisp and the encoder fast.
+        val followIdx = if (follow >= FOLLOW_SWITCH && !tl.isOutro(frame)) {
+            val idx = if (followSegments.all { it.bitmap != null }) {
+                containingFollowIndex(tl.mapProgress(frame), followSegments, overviewCrop, centerX, centerY, w, h)
+            } else -1
+            check(idx >= 0) { "MOVE requires a complete containing follow segment" }
+            idx
+        } else -1
+        val switchCloseUp = followIdx >= 0
+        if (switchCloseUp || ((follow < FOLLOW_SWITCH || tl.isOutro(frame)) && background != null)) {
             canvas.save()
             canvas.translate(w / 2, h / 2)
             canvas.scale(cameraZoom, cameraZoom)
             canvas.translate(-centerX, -centerY)
-            canvas.drawBitmap(brightenOnce(background), null, android.graphics.RectF(0f, 0f, w, h), null)
+            if (!switchCloseUp) {
+                background?.let {
+                    canvas.drawBitmap(brightenOnce(it), null,
+                        android.graphics.RectF(0f, 0f, w, h), null)
+                }
+            }
+            if (switchCloseUp) {
+                val seg = followSegments[followIdx]
+                val dst = checkNotNull(followRectInOverview(seg.info, overviewCrop, w, h))
+                val bmp = checkNotNull(seg.bitmap)
+                canvas.drawBitmap(brightenOnce(bmp), null, dst, null)
+            }
             canvas.restore()
+        }
+        if (background != null || closeUpBackground != null) {
             canvas.drawRect(0f, 0f, w, h, dimPaint)
+        } else {
+            canvas.drawRect(0f, 0f, w, h, bgPaint)
+            drawSchematicGrid(canvas, w, h)
         }
         if (frame % limits.fps == 0 || frame == frameCount - 1) {
             android.util.Log.i(
                 "MapSnapshot",
-                "videoCam z=${mercator?.zoom ?: 0} phase=${if (blend == 0f) "overview" else "follow"} " +
-                    "pointIndex=${tl.pointIndex(progress)} zoom=$cameraZoom photo=${tl.photoAt(frame)?.let { "yes" } ?: "no"}"
+                "videoCam z=${mercator?.zoom ?: 0} follow=${"%.2f".format(follow)} camZ=$cameraZoom " +
+                    "pointIndex=${tl.pointIndex(progress)} photo=${tl.photoAt(frame)?.let { "yes" } ?: "no"}"
             )
         }
 
@@ -362,7 +667,7 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             if (index == 0) fullPath.moveTo(x, y) else fullPath.lineTo(x, y)
         }
         canvas.drawPath(fullPath, routePaint)
-        // Whole route in the accent colour from frame 0 — it never "draws itself in".
+        // Whole route in the accent colour from frame 0 вЂ” it never "draws itself in".
         canvas.drawPath(fullPath, fullAccentPaint)
 
         // Passed trail: everything 0 -> current point stays highlighted (amber),
@@ -379,7 +684,10 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         passed.lineTo(cx0, cy0)
         canvas.drawPath(passed, trailPaint)
 
-        // Start (green) and finish (red) end points of the route.
+        // Sprint 41: START must not look like the moving "me" marker (orange disc +
+        // white ring): start = green disc + white play triangle, no ring. FINISH =
+        // checkered flag on a short pole (vector, no assets), red dot at the tip of
+        // the route end stays as the geographic anchor.
         run {
             val first = track.points.first()
             val last = track.points.last()
@@ -387,25 +695,63 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             val (fx, fy) = project(last.lat, last.lon)
             canvas.drawCircle(sx, sy, 20f, dotHaloPaint)
             canvas.drawCircle(sx, sy, 14f, startPointPaint)
-            canvas.drawCircle(sx, sy, 14f, dotRingPaint)
+            val tri = android.graphics.Path().apply {
+                moveTo(sx - 5f, sy - 7f)
+                lineTo(sx + 8f, sy)
+                lineTo(sx - 5f, sy + 7f)
+                close()
+            }
+            canvas.drawPath(tri, startGlyphPaint)
             canvas.drawCircle(fx, fy, 20f, dotHaloPaint)
             canvas.drawCircle(fx, fy, 14f, finishPointPaint)
-            canvas.drawCircle(fx, fy, 14f, dotRingPaint)
+            drawCheckeredFlag(canvas, fx, fy)
         }
 
-        // Photo markers sitting on the route at their time positions. Only the photos that
-        // really get a full-screen insert are pinned, so the map never promises more than
-        // the clip delivers.
-        for (photo in tl.inserts) {
-            val pos = photo.latitude?.let { lat ->
-                photo.longitude?.let { lon -> lat to lon }
-            } ?: GeoUtils.interpolateByTime(track.points, photo.timestamp)
-            if (pos != null) {
+        // Photo badges like live: dark halo + brand disc + white camera glyph.
+        // Sprint 41: the pin is drawn from insertFraction - the SAME value the
+        // marker freezes on - so pin and marker can never use different geos.
+        val camGlyph = cameraGlyph()
+        for ((pinIndex, _) in tl.inserts.withIndex()) {
+            val f = tl.insertFraction(pinIndex)
+            val pp = tl.motion.position(f)
+            val pi = floor(pp).toInt().coerceIn(0, n - 1)
+            val pt = (pp - pi).coerceIn(0f, 1f)
+            val pa = track.points[pi]
+            val pb = track.points[(pi + 1).coerceAtMost(n - 1)]
+            val pos = (pa.lat + (pb.lat - pa.lat) * pt) to (pa.lon + (pb.lon - pa.lon) * pt)
+            run {
                 val (mx, my) = project(pos.first, pos.second)
-                canvas.drawCircle(mx, my, 16f, dotHaloPaint)
-                canvas.drawCircle(mx, my, 11f, photoDotPaint)
-                canvas.drawCircle(mx, my, 11f, dotRingPaint)
-                canvas.drawCircle(mx, my, 4f, dotHaloPaint)
+                // Sprint 40: same badge as the live map - dark halo + disc + white camera
+                // glyph and no extra white ring (the ring made it read as a plain dot).
+                canvas.drawCircle(mx, my, 19f, dotHaloPaint)
+                canvas.drawCircle(mx, my, 16f, photoDotPaint)
+                val gs = 24f
+                camGlyph.setBounds(
+                    (mx - gs / 2).toInt(), (my - gs / 2).toInt(),
+                    (mx + gs / 2).toInt(), (my + gs / 2).toInt()
+                )
+                camGlyph.draw(canvas)
+            }
+        }
+
+        // Max-speed peak: small pin always, label + pulse only while the marker is on it.
+        tl.peakFraction?.let { pf ->
+            val pm = tl.motion
+            val pp = pm.position(pf)
+            val pi = floor(pp).toInt().coerceIn(0, n - 2)
+            val pf2 = (pp - pi).coerceIn(0f, 1f)
+            val pa = track.points[pi]
+            val pb = track.points[pi + 1]
+            val plat = pa.lat + (pb.lat - pa.lat) * pf2
+            val plon = pa.lon + (pb.lon - pa.lon) * pf2
+            val (px, py) = project(plat, plon)
+            canvas.drawCircle(px, py, 20f, dotHaloPaint)
+            canvas.drawCircle(px, py, 14f, peakPaint)
+            canvas.drawCircle(px, py, 14f, dotRingPaint)
+            if (tl.isPeakActive(frame)) {
+                canvas.drawCircle(px, py, 24f, peakPaint)
+                val label = GeoUtils.formatSpeed(tl.peakSpeedMps)
+                canvas.drawText(label, px + 22f, py - 18f, peakTextPaint)
             }
         }
 
@@ -419,6 +765,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             canvas.drawCircle(mx, my, 15f, dotPaint)
             canvas.drawCircle(mx, my, 15f, dotRingPaint)
         }
+        // End of the tilted map group: the photo insert and the HUD stay flat and unskewed.
+        canvas.restore()
 
         // Full-screen photo insert: shown when the moving marker reaches the photo position.
         // The map is paused (see RouteVideoTimeline.mapProgress), so the marker literally
@@ -476,8 +824,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val ride = track.name
         canvas.drawText(ride, w / 2f - introRidePaint.measureText(ride) / 2f, cy + 22f, introRidePaint)
         val avgSpeed = if (track.duration > 0) track.distance / (track.duration / 1000f) else 0f
-        val stats = GeoUtils.formatDistance(track.distance) + "  ·  " +
-            GeoUtils.formatDuration(track.duration) + "  ·  " + GeoUtils.formatSpeed(avgSpeed)
+        val stats = GeoUtils.formatDistance(track.distance) + "  В·  " +
+            GeoUtils.formatDuration(track.duration) + "  В·  " + GeoUtils.formatSpeed(avgSpeed)
         canvas.drawText(stats, w / 2f - introStatsPaint.measureText(stats) / 2f, cy + 82f, introStatsPaint)
     }
 

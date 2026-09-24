@@ -8,15 +8,16 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.widget.VideoView
 import androidx.core.content.FileProvider
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,12 +27,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FitScreen
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -44,12 +52,22 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.layout.onSizeChanged
+
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
+
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,7 +77,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -70,6 +88,15 @@ import com.alexander.routestory.service.VideoExportState
 import com.alexander.routestory.utils.GeoUtils
 import java.io.File
 import android.content.Context
+
+private fun stateTrackId(state: VideoExportState): Long? = when (state) {
+    is VideoExportState.Preparing -> state.trackId
+    is VideoExportState.Running -> state.trackId
+    is VideoExportState.Done -> state.trackId
+    is VideoExportState.Failed -> state.trackId
+    VideoExportState.Idle -> null
+}
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -88,20 +115,42 @@ fun TrackDetailScreen(
     val isPro by viewModel.isPro.collectAsStateWithLifecycle()
     val trackMissing by viewModel.notFound.collectAsStateWithLifecycle()
     var showDeleteDialog by remember { mutableStateOf(false) }
+    // Sprint 41: overwrite warning before re-rendering an existing video.
+    var showRecreateConfirm by remember { mutableStateOf(false) }
+    var showCreateVideoDialog by remember { mutableStateOf(false) }
     var selectedPhoto by remember { mutableStateOf<TrackPhoto?>(null) }
-    var showShiftDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    // Sprint 27: Pro editing mode (rename, photos, re-render) reached from "Изменить".
-    var editMode by remember { mutableStateOf(false) }
     // Sprint 22: the ride screen is view-only by default; editing (photos, re-rendering
 
     val pickPhotosLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(10)
     ) { uris -> if (uris.isNotEmpty()) viewModel.addPhotos(uris) }
 
+    // Sprint 41: saving works for BOTH the fresh Done result and the archived copy
+    // (any time from the watch dialog), so the launcher takes an explicit target.
+    var saveTarget by remember { mutableStateOf<File?>(null) }
     val saveVideoLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("video/mp4")
-    ) { uri -> uri?.let { viewModel.saveVideoTo(it) } }
+    ) { uri ->
+        val target = saveTarget
+        if (uri != null && target != null) viewModel.saveVideoTo(uri, target)
+    }
+
+    // Sprint 42: photo save to a SAF destination (no permissions needed).
+    var savePhotoTarget by remember { mutableStateOf<TrackPhoto?>(null) }
+    val savePhotoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/*")
+    ) { uri ->
+        val photo = savePhotoTarget
+        if (uri != null && photo != null) viewModel.savePhotoTo(uri, photo)
+    }
+    // Sprint 42: pick a custom BGM track once; the choice rides the next export.
+    val musicPath by viewModel.musicPath.collectAsStateWithLifecycle()
+    val pickMusicLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> uri?.let { viewModel.pickMusic(it) } }
+    // Sprint 43: SFX toggle for the next export (default on, persisted).
+    val keepSfx by viewModel.keepSfx.collectAsStateWithLifecycle()
 
     // The summary screen is opened right after a successful save.
     LaunchedEffect(isSummary) {
@@ -146,13 +195,14 @@ fun TrackDetailScreen(
                 }
             }
         } else {
+            val scrollState = rememberScrollState()
             val photoPositions = remember(current.photos, current.points) {
                 photoPositionsOf(current.points, current.photos)
             }
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scrollState)
                     .padding(innerPadding)
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -180,7 +230,7 @@ fun TrackDetailScreen(
                             style = MaterialTheme.typography.titleLarge,
                             modifier = Modifier.weight(1f)
                         )
-                        if (isSummary || editMode) {
+                        if (isSummary || isPro) {
                             TextButton(onClick = { showRenameDialog = true }) {
                                 Text(stringResource(R.string.action_rename))
                             }
@@ -200,57 +250,66 @@ fun TrackDetailScreen(
                     DetailStat(stringResource(R.string.stat_avg_speed), GeoUtils.formatSpeed(avgSpeed(current)))
                     DetailStat(stringResource(R.string.stat_max_speed), GeoUtils.formatSpeed(maxSpeed(current)))
                 }
+                // Sprint 42: inline video block (progress while Running, embedded
+                // player when Done/archived) right under the map and stats.
+                VideoBlock(
+                    trackId = current.id,
+                    trackName = current.name,
+                    onSave = { f ->
+                        saveTarget = f
+                        saveVideoLauncher.launch(
+                            "routestory_video_" + current.id + ".mp4"
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Text(stringResource(R.string.photos_title), style = MaterialTheme.typography.titleMedium)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(current.photos) { photo ->
                         PhotoThumb(photo = photo, onClick = { selectedPhoto = photo })
                     }
                 }
-                // Sprint 27: Free renders one video per ride and afterwards only watches it;
-                // re-creating it is Pro. Watching an already rendered video is free for all.
-                val archivedVideo = remember(current.id, videoState) {
+                // Sprint 42: the archived copy also belongs to the inline player block,
+                // so the create button keys off Done state only.
+                val archivedVideo = remember(current.id, videoState::class) {
                     viewModel.archivedVideo(current.id)
                 }
-                val canCreateVideo = isPro || archivedVideo == null
-                if (canCreateVideo) {
-                    Button(
-                        onClick = { viewModel.createVideo(current) },
-                        modifier = Modifier.fillMaxWidth(),
-                        // A ride without points has nothing to animate.
-                        enabled = videoState !is VideoExportState.Running && current.points.isNotEmpty()
-                    ) {
-                        Text(stringResource(R.string.action_create_video))
-                    }
+                Button(
+                    onClick = {
+                        // Sprint 41: an existing video is only overwritten after a warning.
+                        if (archivedVideo != null) showRecreateConfirm = true
+                        else showCreateVideoDialog = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    // A ride without points has nothing to animate.
+                    enabled = videoState !is VideoExportState.Running && current.points.isNotEmpty()
+                ) {
+                    Text(
+                        stringResource(
+                            if (archivedVideo != null) R.string.action_recreate_video
+                            else R.string.action_create_video
+                        )
+                    )
+                }
+                // Sprint 43: SFX toggle — "Оставить звуковые эффекты" (default on).
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = keepSfx,
+                        onCheckedChange = { viewModel.setKeepSfx(it) }
+                    )
+                    Text(
+                        text = stringResource(R.string.video_sfx_toggle),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
                 // Watch: available to everyone once a rendered video exists (free feature).
-                // Free users see it only when they already have an archived video;
-                // Pro users always have one after their first export.
-                if (archivedVideo != null && videoState !is VideoExportState.Done) {
-                    var showVideo by remember(current.id) { mutableStateOf(false) }
-                    OutlinedButton(
-                        onClick = { showVideo = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(stringResource(R.string.action_watch_video))
-                    }
-                    if (showVideo) {
-                        AlertDialog(
-                            onDismissRequest = { showVideo = false },
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            title = { Text(current.name) },
-                            text = {
-                                SavedVideoPlayer(file = archivedVideo)
-                            },
-                            confirmButton = {
-                                TextButton(onClick = { showVideo = false }) {
-                                    Text(stringResource(R.string.action_close))
-                                }
-                            }
-                        )
-                    }
-                }
-                // Summary: no "Изменить" button; "Добавить фото" is directly visible for everyone.
-                // History/detail keeps the Pro-gated edit toggle (unchanged below).
+                // Sprint 42: playback lives in the inline VideoBlock (progress while
+                // running, player when done/archived) - no modal preview anymore.
+                // Both flows show "Добавить фото"; the detail screen keeps the Pro gate.
                 if (isSummary) {
                     OutlinedButton(
                         onClick = {
@@ -263,13 +322,14 @@ fun TrackDetailScreen(
                         Text(stringResource(R.string.action_add_photos))
                     }
                 } else {
-                    // Sprint 27: button order is create video -> watch -> edit (Pro) -> delete.
-                    val canEditRide = isPro
-                    val canAddPhotos = canEditRide && editMode
+                    // Sprint 47: no edit mode on a finished ride - "Добавить фото"
+                    // replaces "Изменить" and keeps the same Pro gate.
                     OutlinedButton(
                         onClick = {
-                            if (canEditRide) {
-                                editMode = !editMode
+                            if (isPro) {
+                                pickPhotosLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
                             } else {
                                 screenScope.launch {
                                     snackbarHostState.showSnackbar(context.getString(R.string.pro_required_edit))
@@ -279,19 +339,7 @@ fun TrackDetailScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(stringResource(if (editMode) R.string.action_close else R.string.action_edit))
-                    }
-                    if (canAddPhotos) {
-                        OutlinedButton(
-                            onClick = {
-                                pickPhotosLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(stringResource(R.string.action_add_photos))
-                        }
+                        Text(stringResource(R.string.action_add_photos))
                     }
                 }
                 OutlinedButton(
@@ -366,42 +414,17 @@ fun TrackDetailScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showShiftDialog = true }) {
-                    Text(stringResource(R.string.action_shift_time))
-                }
-            }
-        )
-    }
-
-    if (showShiftDialog) {
-        var minutesText by remember { mutableStateOf("0") }
-        AlertDialog(
-            onDismissRequest = { showShiftDialog = false },
-            title = { Text(stringResource(R.string.action_shift_time)) },
-            text = {
-                OutlinedTextField(
-                    value = minutesText,
-                    onValueChange = { minutesText = it },
-                    label = { Text(stringResource(R.string.shift_minutes_label)) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val target = selectedPhoto
-                    val minutes = minutesText.toLongOrNull()
-                    if (target != null && minutes != null && minutes != 0L) {
-                        viewModel.shiftPhotoTime(target, minutes)
+                // Sprint 42: photos can also be saved to the device (SAF, no permission).
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        savePhotoTarget = photo
+                        savePhotoLauncher.launch("routestory_photo_" + photo.timestamp + ".jpg")
+                    }) {
+                        Text(stringResource(R.string.action_save))
                     }
-                    showShiftDialog = false
-                    selectedPhoto = null
-                }) {
-                    Text(stringResource(R.string.action_apply))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showShiftDialog = false }) {
-                    Text(stringResource(R.string.action_cancel))
+                    TextButton(onClick = { selectedPhoto = null }) {
+                        Text(stringResource(R.string.action_close))
+                    }
                 }
             }
         )
@@ -414,119 +437,59 @@ fun TrackDetailScreen(
         }
     }
 
-    when (val videoResult = videoState) {
-        is VideoExportState.Running -> {
-            AlertDialog(
-                onDismissRequest = { },
-                title = { Text(stringResource(R.string.video_generating)) },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        LinearProgressIndicator(
-                            progress = { videoResult.progress },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(text = (videoResult.progress * 100).toInt().toString() + " %")
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { viewModel.cancelVideo() }) {
-                        Text(stringResource(R.string.action_cancel))
-                    }
+    // Sprint 42 dead modal dialogs removed (inline VideoBlock).
+
+    if (showRecreateConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRecreateConfirm = false },
+            title = { Text(stringResource(R.string.recreate_confirm_title)) },
+            text = { Text(stringResource(R.string.recreate_confirm_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRecreateConfirm = false
+                    showCreateVideoDialog = true
+                }) {
+                    Text(stringResource(R.string.action_recreate_video))
                 }
-            )
-        }
-        is VideoExportState.Done -> {
-            var previewFailed by remember(videoResult.file) {
-                mutableStateOf(!videoResult.file.isFile || videoResult.file.length() == 0L)
-            }
-            var previewPrepared by remember(videoResult.file) { mutableStateOf(false) }
-            LaunchedEffect(videoResult.file) {
-                kotlinx.coroutines.delay(15_000)
-                if (!previewPrepared) previewFailed = true
-            }
-            LaunchedEffect(previewFailed) {
-                if (previewFailed) {
-                    screenScope.launch {
-                        snackbarHostState.showSnackbar(context.getString(R.string.video_error))
-                    }
-                    viewModel.consumeVideoResult()
+            },
+            dismissButton = {
+                TextButton(onClick = { showRecreateConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
                 }
             }
-            var previewEnded by remember(videoResult.file) { mutableStateOf(false) }
-            val videoViewRef = remember(videoResult.file) { mutableStateOf<VideoView?>(null) }
-            if (!previewFailed) AlertDialog(
-                onDismissRequest = { viewModel.consumeVideoResult() },
-                containerColor = MaterialTheme.colorScheme.surface,
-                title = { Text(stringResource(R.string.video_done)) },
-                text = {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
-                        shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        AndroidView(
-                            factory = { ctx ->
-                                VideoView(ctx).apply {
-                                    videoViewRef.value = this
-                                    // Local app file plays directly; start() only after the
-                                    // surface is prepared (calling it too early is the usual
-                                    // reason a preview stays black).
-                                    setOnPreparedListener { mp ->
-                                        previewPrepared = true
-                                        // Sprint 24: play once; "watch again" restarts.
-                                        mp.isLooping = false
-                                        setOnCompletionListener { previewEnded = true }
-                                        start()
-                                    }
-                                    setOnErrorListener { _, what, extra ->
-                                        android.util.Log.w("MapSnapshot", "preview error what=$what extra=$extra")
-                                        previewFailed = true
-                                        true
-                                    }
-                                    setVideoURI(android.net.Uri.fromFile(videoResult.file))
-                                    // Tap toggles play/pause.
-                                    setOnClickListener {
-                                        if (isPlaying) pause() else start()
-                                    }
-                                }
-                            },
-                            onReset = null,
-                            onRelease = { it.stopPlayback() },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(240.dp)
-                        )
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        saveVideoLauncher.launch("routestory_" + System.currentTimeMillis() + ".mp4")
-                    }) {
-                        Text(stringResource(R.string.action_save))
-                    }
-                },
-                dismissButton = {
-                    Row {
-                        if (previewEnded) {
-                            TextButton(onClick = {
-                                previewEnded = false
-                                videoViewRef.value?.let { it.seekTo(0); it.start() }
-                            }) {
-                                Text(stringResource(R.string.action_watch_again))
-                            }
-                        }
-                        TextButton(onClick = { shareVideo(videoResult.file, context) }) {
-                            Text(stringResource(R.string.action_share))
-                        }
-                        TextButton(onClick = { viewModel.consumeVideoResult() }) {
-                            Text(stringResource(R.string.action_close))
-                        }
-                    }
-                }
-            )
-        }
-        else -> Unit
+        )
     }
+    if (showCreateVideoDialog) {
+        var sfxEnabled by remember { mutableStateOf(keepSfx) }
+        AlertDialog(
+            onDismissRequest = { showCreateVideoDialog = false },
+            title = { Text(stringResource(R.string.action_create_video)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.music_default))
+                    OutlinedButton(onClick = { pickMusicLauncher.launch(arrayOf("audio/*")) }) {
+                        Text(stringResource(R.string.action_pick_music))
+                    }
+                    musicPath?.let { Text(stringResource(R.string.music_chosen, it.substringAfterLast('/'))) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.Checkbox(sfxEnabled, onCheckedChange = { sfxEnabled = it })
+                        Text(stringResource(R.string.video_sfx_toggle_full), Modifier.weight(1f))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    track?.let {
+                        viewModel.createVideo(it, sfxEnabled)
+                    }
+                    showCreateVideoDialog = false
+                }) { Text(stringResource(R.string.action_start_video)) }
+            },
+            dismissButton = { TextButton(onClick = { showCreateVideoDialog = false }) { Text(stringResource(R.string.action_cancel)) } }
+        )
+    }
+
+
 
     if (showDeleteDialog) {
         AlertDialog(
@@ -603,33 +566,308 @@ private fun PhotoThumb(photo: TrackPhoto, onClick: () -> Unit) {
     }
 }
 @Composable
-private fun SavedVideoPlayer(file: File) {
-    AndroidView(
-        factory = { ctx ->
-            VideoView(ctx).apply {
-                setOnPreparedListener { mp ->
-                    // Sprint 24: no looping anywhere; a tap restarts after the end.
-                    mp.isLooping = false
-                    start()
-                }
-                setOnErrorListener { _, what, extra ->
-                    android.util.Log.w("MapSnapshot", "saved video error what=$what extra=$extra")
-                    true
-                }
-                setVideoURI(android.net.Uri.fromFile(file))
-                setOnClickListener {
-                    if (isPlaying) pause() else {
-                        if (currentPosition >= duration && duration > 0) seekTo(0)
-                        start()
+private fun VideoBlock(
+    trackId: Long,
+    trackName: String,
+    modifier: Modifier = Modifier,
+    onSave: (File) -> Unit = {},
+    viewModel: TrackDetailViewModel = hiltViewModel()
+) {
+    val videoState by viewModel.videoState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val ownState = videoState.takeIf { stateTrackId(it) == trackId }
+    val preparing = ownState as? VideoExportState.Preparing
+    val running = ownState as? VideoExportState.Running
+    val doneFile = (ownState as? VideoExportState.Done)?.file
+    val archived = remember(trackId, videoState::class) { viewModel.archivedVideo(trackId) }
+    var autoplayConsumed by rememberSaveable(trackId) { mutableStateOf<String?>(null) }
+    // Sprint 47: autoplay is allowed only for an export that STARTED while this very
+    // screen was showing it; opening a saved ride from History/notification never
+    // starts playback by itself.
+    var exportStartedHere by rememberSaveable(trackId) { mutableStateOf(false) }
+    LaunchedEffect(preparing, running) {
+        if (preparing != null || running != null) exportStartedHere = true
+    }
+    // The fresh export wins while its state is present; afterwards the archive.
+    val file = doneFile?.takeIf { it.isFile && it.length() > 0L } ?: archived
+    if (preparing == null && running == null && file == null) return
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = MaterialTheme.shapes.medium,
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (preparing != null) {
+                Text(stringResource(R.string.video_preparing), style = MaterialTheme.typography.titleSmall)
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            val r = running
+            if (r != null) {
+                Text(
+                    text = stringResource(R.string.video_generating),
+                    style = MaterialTheme.typography.titleSmall
+                )
+                LinearProgressIndicator(
+                    progress = { r.progress },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(text = (r.progress * 100).toInt().toString() + " %")
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = { viewModel.cancelVideo() }) {
+                        Text(stringResource(R.string.action_cancel))
                     }
                 }
             }
-        },
-        onRelease = { it.stopPlayback() },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(240.dp)
-    )
+            if (preparing == null && running == null && file != null) {
+                val freshAutoPlay = exportStartedHere && doneFile != null && file.absolutePath != autoplayConsumed
+                InlineVideoPlayer(
+                    file = file,
+                    modifier = Modifier.fillMaxWidth(),
+                    autoPlay = freshAutoPlay,
+                    onAutoplayConsumed = { autoplayConsumed = file.absolutePath }
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    TextButton(onClick = {
+                        shareVideo(file, context)
+                    }) {
+                        Text(stringResource(R.string.action_share))
+                    }
+                    TextButton(onClick = {
+                        onSave(file)
+                    }) {
+                        Text(stringResource(R.string.action_save))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineVideoPlayer(
+    file: File,
+    modifier: Modifier = Modifier,
+    autoPlay: Boolean,
+    onAutoplayConsumed: () -> Unit
+) {
+    // Sprint 42: seek slider + fullscreen dialog, no new libraries (plain VideoView).
+    // Sprint 43: compact timeline + icon transport controls (play/pause/stop/fullscreen).
+    var videoView by remember(file) { mutableStateOf<VideoView?>(null) }
+    var durationMs by remember(file) { mutableStateOf(0) }
+    var positionMs by remember(file) { mutableStateOf(0) }
+    var dragging by remember(file) { mutableStateOf(false) }
+    var fullscreenAt by remember(file) { mutableStateOf<Int?>(null) }
+    var failed by remember(file) { mutableStateOf(false) }
+    var isPlaying by remember(file) { mutableStateOf(false) }
+    // Fullscreen handoff: inline pauses/releases first, and these two remember where
+    // the single remaining player stopped so the inline view can resume exactly there.
+    var resumePos by remember(file) { mutableStateOf(0) }
+    var resumePlay by remember(file) { mutableStateOf(false) }
+
+    LaunchedEffect(videoView) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            val v = videoView ?: break
+            if (!dragging) {
+                positionMs = v.currentPosition
+                if (v.duration > 0) durationMs = v.duration
+                isPlaying = v.isPlaying
+            }
+        }
+    }
+    LaunchedEffect(failed) {
+        if (failed) videoView = null
+    }
+
+    if (!failed) {
+        Box(modifier = modifier.fillMaxWidth().height(220.dp)) {
+            // Unmounted while the fullscreen dialog is open (onRelease -> stopPlayback),
+            // so inline and fullscreen can never play at the same time.
+            if (fullscreenAt == null) AndroidView(
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        setOnPreparedListener { mp ->
+                            mp.isLooping = false
+                            setOnCompletionListener { positionMs = durationMs; isPlaying = false }
+                            durationMs = mp.duration
+                            // Coming back from fullscreen: continue at the saved position
+                            // and start only when it was playing there.
+                            val resume = resumePos
+                            if (resume > 0) { seekTo(resume); positionMs = resume }
+                            resumePos = 0
+                            if (autoPlay || resumePlay) {
+                                start(); isPlaying = true
+                                if (autoPlay) { positionMs = 0; onAutoplayConsumed() }
+                            }
+                            resumePlay = false
+                        }
+                        setOnErrorListener { _, what, extra ->
+                            android.util.Log.w("MapSnapshot", "inline video error what=$what extra=$extra")
+                            failed = true; true
+                        }
+                        setVideoURI(android.net.Uri.fromFile(file))
+                        setOnClickListener {
+                            if (isPlaying) { pause(); isPlaying = false }
+                            else { if (duration > 0 && currentPosition >= duration) seekTo(0); start(); isPlaying = true }
+                        }
+                        videoView = this
+                    }
+                },
+                onRelease = { videoView = null; it.stopPlayback() },
+                modifier = Modifier.fillMaxSize()
+            )
+            VideoControls(
+                positionMs = positionMs,
+                durationMs = durationMs,
+                isPlaying = isPlaying,
+                onSeek = { dragging = true; positionMs = it },
+                onSeekFinished = { videoView?.seekTo(positionMs); dragging = false },
+                onPlayPause = {
+                    val v = videoView
+                    if (v != null) {
+                        if (v.isPlaying) { v.pause(); isPlaying = false } else { v.start(); isPlaying = true }
+                    }
+                },
+                onStop = { videoView?.let { it.pause(); it.seekTo(0) }; positionMs = 0; isPlaying = false },
+                onFullscreen = {
+                    // Single audio source: pause + release the inline view first; the
+                    // fullscreen player takes over from this exact position.
+                    resumePos = videoView?.currentPosition ?: positionMs
+                    resumePlay = isPlaying
+                    videoView?.pause()
+                    isPlaying = false
+                    fullscreenAt = resumePos
+                },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
+    }
+    val at = fullscreenAt
+    if (at != null) {
+        // resumePos/resumePlay follow the fullscreen player (onState), so any close
+        // path leaves the inline view right where the user stopped it.
+        val closeFullscreen = { fullscreenAt = null }
+        androidx.compose.ui.window.Dialog(onDismissRequest = closeFullscreen) {
+            FullscreenPlayer(
+                file = file,
+                startAt = at,
+                onState = { pos, playing -> resumePos = pos; resumePlay = playing },
+                onClose = closeFullscreen
+            )
+        }
+    }
+}
+
+@Composable
+private fun FullscreenPlayer(
+    file: File,
+    startAt: Int,
+    onState: (positionMs: Int, playing: Boolean) -> Unit,
+    onClose: () -> Unit
+) {
+    // Sprint 42: same VideoView/seek pattern sized to the dialog.
+    // Sprint 43: icon transport controls + compact timeline; the "Закрыть" label is
+    // replaced by a Close icon in the top-right corner.
+    var fsView by remember(file) { mutableStateOf<VideoView?>(null) }
+    var fsDuration by remember(file) { mutableStateOf(0) }
+    var fsPosition by remember(file, startAt) { mutableStateOf(startAt) }
+    var fsDragging by remember(file) { mutableStateOf(false) }
+    var fsPlaying by remember(file) { mutableStateOf(false) }
+
+    LaunchedEffect(fsView) {
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            val v = fsView ?: break
+            if (!fsDragging) {
+                fsPosition = v.currentPosition
+                if (v.duration > 0) fsDuration = v.duration
+                fsPlaying = v.isPlaying
+                onState(fsPosition, fsPlaying)
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            AndroidView(
+                factory = { ctx ->
+                    VideoView(ctx).apply {
+                        setOnPreparedListener { mp ->
+                            mp.isLooping = false
+                            fsDuration = mp.duration
+                            seekTo(startAt)
+                            start()
+                            fsPlaying = true
+                            onState(startAt, true)
+                        }
+                        setOnCompletionListener {
+                            fsPosition = duration
+                            fsPlaying = false
+                        }
+                        setOnErrorListener { _, _, _ -> true }
+                        setVideoURI(android.net.Uri.fromFile(file))
+                        setOnClickListener {
+                            if (isPlaying) { pause(); fsPlaying = false }
+                            else { start(); fsPlaying = true }
+                        }
+                        fsView = this
+                    }
+                },
+                onRelease = { it.stopPlayback() },
+                modifier = Modifier.fillMaxWidth().weight(1f)
+            )
+            // Fullscreen controls remain visible; the old slider is intentionally removed.
+            VideoControls(
+                fsPosition, fsDuration, fsPlaying,
+                onSeek = { fsDragging = true; fsPosition = it },
+                onSeekFinished = { fsView?.seekTo(fsPosition); fsDragging = false },
+                onPlayPause = { fsView?.let { if (fsPlaying) { it.pause(); fsPlaying = false } else { it.start(); fsPlaying = true } } },
+                onStop = { fsView?.let { it.pause(); it.seekTo(0) }; fsPosition = 0; fsPlaying = false },
+                onFullscreen = onClose
+            )
+        }
+    }
+}
+
+@Composable
+private fun VideoControls(
+    positionMs: Int, durationMs: Int, isPlaying: Boolean,
+    onSeek: (Int) -> Unit, onSeekFinished: () -> Unit,
+    onPlayPause: () -> Unit, onStop: () -> Unit, onFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var width by remember { mutableStateOf(1) }
+    Box(modifier.fillMaxWidth().height(48.dp).onSizeChanged { width = it.width.coerceAtLeast(1) }) {
+        Canvas(Modifier.fillMaxWidth().height(18.dp).align(Alignment.BottomCenter).padding(horizontal = 8.dp)
+            .pointerInput(durationMs, width) {
+                detectHorizontalDragGestures(
+                    onDragStart = { onSeek((it.x / width * durationMs).toInt()) },
+                    onHorizontalDrag = { change, _ -> onSeek((change.position.x / width * durationMs).toInt()) },
+                    onDragEnd = { onSeekFinished() }
+                )
+            }) {
+            val y = size.height / 2f
+            val p = (positionMs.toFloat() / durationMs.coerceAtLeast(1)).coerceIn(0f, 1f)
+            drawLine(Color.White.copy(alpha = .55f), Offset(0f, y), Offset(size.width, y), strokeWidth = 2f)
+            drawLine(Color.White, Offset(0f, y), Offset(size.width * p, y), strokeWidth = 2f)
+            drawCircle(Color.White, 3.5f, Offset(size.width * p, y))
+        }
+        Row(Modifier.fillMaxWidth().align(Alignment.Center), horizontalArrangement = Arrangement.SpaceEvenly) {
+            IconButton(onClick = onPlayPause) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, modifier = Modifier.size(20.dp)) }
+            IconButton(onClick = onStop) { Icon(Icons.Filled.Stop, null, modifier = Modifier.size(20.dp)) }
+            IconButton(onClick = onFullscreen) { Icon(Icons.Filled.FitScreen, null, modifier = Modifier.size(20.dp)) }
+        }
+    }
 }
 
 private fun shareVideo(file: File, context: Context) {

@@ -34,7 +34,8 @@ class ProViewModel @Inject constructor(
     }
 
     fun buy(activity: Activity) {
-        billingManager.purchase(activity) { ok -> _purchaseResult.tryEmit(ok) }
+        // Pre-alpha test build: no Billing — buying always grants Pro locally.
+        viewModelScope.launch { proRepository.setPro(true); _purchaseResult.tryEmit(true) }
     }
 
     fun activateDemo() {

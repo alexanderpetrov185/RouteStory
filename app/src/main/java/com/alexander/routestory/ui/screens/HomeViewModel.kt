@@ -13,6 +13,8 @@ import com.alexander.routestory.service.TrackingStateHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -29,6 +31,9 @@ class HomeViewModel @Inject constructor(
 ) : ViewModel() {
 
     val uiState: StateFlow<TrackingUiState> = stateHolder.uiState
+
+    val isPro: StateFlow<Boolean> = proRepository.isPro
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     fun setDiscardConfirmed(enabled: Boolean) {
         viewModelScope.launch {

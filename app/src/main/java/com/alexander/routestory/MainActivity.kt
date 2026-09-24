@@ -28,6 +28,12 @@ class MainActivity : ComponentActivity() {
     /** Ride stored while no window existed: its summary is opened on this start. */
     private val pendingSummary = MutableStateFlow<Long?>(null)
 
+    /**
+     * Ride the export notification must open (with the video playing). Set by the tap on
+     * "Видео готово", consumed by the nav host.
+     */
+    private val pendingTrackId = MutableStateFlow<Long?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -45,16 +51,19 @@ class MainActivity : ComponentActivity() {
                 val saveOutcome by stateHolder.saveOutcome.collectAsStateWithLifecycle()
                 val openRequests by openTrackingRequests.collectAsStateWithLifecycle()
                 val summary by pendingSummary.collectAsStateWithLifecycle()
+                val trackToOpen by pendingTrackId.collectAsStateWithLifecycle()
                 RouteStoryNavHost(
                     rideState = uiState.state,
                     saveOutcome = saveOutcome,
                     openTrackingRequest = openRequests,
                     pendingSummaryTrackId = summary,
+                    pendingTrackId = trackToOpen,
                     onPendingHandled = {
                         pendingSummary.value = null
                         pendingNavigation.clear()
                         stateHolder.consumeSaveOutcome()
-                    }
+                    },
+                    onPendingTrackHandled = { pendingTrackId.value = null }
                 )
             }
         }
@@ -71,10 +80,19 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(EXTRA_OPEN_TRACKING)
             openTrackingRequests.value += 1
         }
+        // "Видео готово" notification tap: open that ride (no autoplay - Sprint 47).
+        val renderedTrackId = intent?.getLongExtra(EXTRA_OPEN_TRACK_ID, -1L) ?: -1L
+        if (renderedTrackId > 0L) {
+            intent!!.removeExtra(EXTRA_OPEN_TRACK_ID)
+            pendingTrackId.value = renderedTrackId
+        }
     }
 
     companion object {
         /** Notification taps carry this extra so the app opens the recording screen. */
         const val EXTRA_OPEN_TRACKING = "com.alexander.routestory.extra.OPEN_TRACKING"
+
+        /** Export-notification taps carry the rendered ride so it can be opened (no autoplay). */
+        const val EXTRA_OPEN_TRACK_ID = "com.alexander.routestory.extra.OPEN_TRACK_ID"
     }
 }

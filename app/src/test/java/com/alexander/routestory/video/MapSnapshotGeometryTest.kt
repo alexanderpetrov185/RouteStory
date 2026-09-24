@@ -15,8 +15,16 @@ class MapSnapshotGeometryTest {
         val track = Track(name = "test", startTime = 0, endTime = 1000,
             distance = 800f, duration = 1000, points = points)
         val crop = MapSnapshotProvider.cropInfo(track, 640, 360)!!
+        // Sprint 41: follow zoom comes from the marker window (>= 1 level above the
+        // overview, capped at MAX_FOLLOW_ZOOM), not simply overviewZoom + 1.
+        val follow = MapSnapshotProvider.followCropInfo(55.753, 37.604, crop, 640, 360)
+        assertTrue("follow=${follow.zoom} ov=${crop.zoom}", follow.zoom > crop.zoom)
+        assertTrue(follow.zoom <= MAX_FOLLOW_ZOOM)
+        assertEquals(FOLLOW_GRID * 256, follow.fullW)
+        assertEquals(FOLLOW_GRID * 256, follow.fullH)
         assertTrue(crop.zoom in 14..16)
-        assertTrue(crop.fullW / 256 * (crop.fullH / 256) <= 9)
+        // The grid must never exceed the tile budget of the snapshot provider.
+        assertTrue(crop.fullW / 256 * (crop.fullH / 256) <= MapSnapshotProvider.MAX_TILES)
         assertEquals(640.0 / 360, crop.cropW.toDouble() / crop.cropH, 0.02)
         for (point in points) {
             val world = 256.0 * (1 shl crop.zoom)

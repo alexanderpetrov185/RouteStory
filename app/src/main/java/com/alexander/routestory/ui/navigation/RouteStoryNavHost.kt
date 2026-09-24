@@ -24,6 +24,7 @@ object Routes {
     const val HISTORY = "history"
     const val PRO = "pro"
     const val ARG_TRACK_ID = "trackId"
+
     const val TRACK_DETAIL = "track/{$ARG_TRACK_ID}"
     const val TRACK_SUMMARY = "summary/{$ARG_TRACK_ID}"
 
@@ -45,7 +46,10 @@ fun RouteStoryNavHost(
     saveOutcome: TrackSaveOutcome? = null,
     openTrackingRequest: Int = 0,
     pendingSummaryTrackId: Long? = null,
-    onPendingHandled: () -> Unit = {}
+    /** Ride the export notification wants to open (Sprint 47: no autoplay). */
+    pendingTrackId: Long? = null,
+    onPendingHandled: () -> Unit = {},
+    onPendingTrackHandled: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
@@ -69,6 +73,16 @@ fun RouteStoryNavHost(
             launchSingleTop = true
         }
         onPendingHandled()
+    }
+
+    // "Видео готово" notification tap: open that ride WITHOUT autoplay (Sprint 47).
+    LaunchedEffect(pendingTrackId) {
+        val id = pendingTrackId ?: return@LaunchedEffect
+        navController.navigate(Routes.trackDetail(id)) {
+            popUpTo(Routes.HOME)
+            launchSingleTop = true
+        }
+        onPendingTrackHandled()
     }
 
     // An active ride always wins over Home when the UI appears (notification tap, return from

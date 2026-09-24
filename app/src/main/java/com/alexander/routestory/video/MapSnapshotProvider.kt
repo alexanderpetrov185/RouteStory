@@ -1,4 +1,4 @@
-﻿package com.alexander.routestory.video
+package com.alexander.routestory.video
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -16,6 +16,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -29,7 +30,52 @@ import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.tan
+
+internal const val MAX_FOLLOW_SEGMENTS = 32
+
+/** Hard budget for follow bitmaps held in memory during one export. */
+
+/**
+ * Sprint 41 follow detail: the follow zoom is derived from a geo WINDOW around the
+ * marker (~[FOLLOW_WINDOW_M] across the screen during MOVE), not from the whole-track
+ * overview bbox - long rides no longer "zoom out".
+ */
+internal fun followTileZoom(overviewZoom: Int): Int =
+    (overviewZoom + 1).coerceIn(0, MAX_FOLLOW_ZOOM)
+
+internal const val MAX_FOLLOW_ZOOM = 18
+internal const val FOLLOW_GRID = 4
+internal const val FOLLOW_SEGMENTS = 6
+
+/** Sprint 41: Web-Mercator meters per pixel at zoom 0 on the equator. */
+internal const val TILE_MPP0 = 156_543.03392
+
+/** Sprint 41: target on-screen geo width during the follow (MOVE) phase, metres. */
+internal const val FOLLOW_WINDOW_M = 2_000.0
+/** Sprint 45: camera is 1.5x closer before every follow crop/zoom calculation. */
+internal const val FOLLOW_ZOOM_MULTIPLIER = 1.5f
+
+/**
+ * Sprint 41: followBlend threshold for showing the sharp segment. The camera must
+ * reach ~87% of its target zoom before the segment is swapped in, otherwise the
+ * segment rectangle cannot cover the still-wide frame (see followCropInfo dz cap).
+ */
+internal const val FOLLOW_SWITCH = 0.85f
+
+/** Sprint 43: per-tile retry attempts for the follow-camera prefetch. */
+internal const val PREFETCH_TILE_RETRIES = 3
+
+/** n = ceil(routeLength / (windowWidth / 2)) + 1. */
+internal fun adaptiveFollowSegmentCount(routeLengthMeters: Double, windowWidthMeters: Double): Int {
+    val step = (windowWidthMeters / 2.0).coerceAtLeast(1.0)
+    return kotlin.math.ceil(routeLengthMeters / step).toInt() + 1
+}
+
+/** Web-Mercator meters per pixel at [zoom] for [lat]. */
+internal fun metersPerPixel(lat: Double, zoom: Int): Double =
+    TILE_MPP0 * cos(Math.toRadians(lat)) / (1 shl zoom)
 
 /**
  * Static map backdrop for the video from cached OpenStreetMap raster tiles.
@@ -121,6 +167,62 @@ class MapSnapshotProvider @Inject constructor(
             )
         }
 
+        /**
+         * Sprint 41: MOVE-phase camera zoom. The screen must show a fixed geo window
+         * (~[FOLLOW_WINDOW_M]) around the marker regardless of the track bbox: short
+         * rides keep the classic 4x, long rides zoom in until the window fits.
+         */
+        fun followCameraZoom(ov: CropInfo, zoomMultiplier: Float = FOLLOW_ZOOM_MULTIPLIER): Float {
+            if (ov.cropW <= 0) return 4f * zoomMultiplier
+            val midLat = (ov.minLat + ov.maxLat) / 2
+            val geoW = ov.cropW * metersPerPixel(midLat, ov.zoom)
+            return (geoW / FOLLOW_WINDOW_M * zoomMultiplier).toFloat().coerceIn(
+                4f * zoomMultiplier,
+                32f * zoomMultiplier
+            )
+        }
+
+        /**
+         * Sprint 41: where the follow segment sits INSIDE the overview frame.
+         *
+         * Both crops are Web-Mercator windows; dz = seg.zoom - ov.zoom >= 1, so one
+         * segment pixel is 2^-dz overview pixels. With ovScale = output / ov.crop:
+         *
+         *   left = (segLeftWorld / 2^dz - ovLeftWorld) * ovScaleX   (top likewise)
+         *   size = seg.crop * ovScale / 2^dz
+         *
+         * The renderer draws the segment into that rectangle in the SAME frame
+         * coordinates as the overview, so switching segments can never move the
+         * route/marker overlay. Returns left, top, right, bottom; null when the
+         * geometry does not line up (caller then shows the overview only).
+         */
+        fun followRectInOverview(
+            seg: CropInfo,
+            ov: CropInfo,
+            width: Int,
+            height: Int
+        ): FloatArray? {
+            val dz = seg.zoom - ov.zoom
+            if (dz < 1) return null
+            if (ov.cropW <= 0 || ov.cropH <= 0 || seg.cropW <= 0 || seg.cropH <= 0) return null
+            val tile = TILE_PX.toDouble()
+            val factor = (1 shl dz).toDouble()
+            val scaleX = width.toDouble() / ov.cropW
+            val scaleY = height.toDouble() / ov.cropH
+            val ovLeft = ov.x0 * tile + ov.leftPx
+            val ovTop = ov.y0 * tile + ov.topPx
+            val segLeft = (seg.x0 * tile + seg.leftPx) / factor
+            val segTop = (seg.y0 * tile + seg.topPx) / factor
+            val left = (segLeft - ovLeft) * scaleX
+            val top = (segTop - ovTop) * scaleY
+            return floatArrayOf(
+                left.toFloat(),
+                top.toFloat(),
+                (left + seg.cropW * scaleX / factor).toFloat(),
+                (top + seg.cropH * scaleY / factor).toFloat()
+            )
+        }
+
         private fun pickZoom(
             minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
             w: Int, h: Int
@@ -150,6 +252,84 @@ class MapSnapshotProvider @Inject constructor(
 
         private fun tileY(lat: Double, z: Int): Int =
             floor(fracY(lat, z)).toInt().coerceIn(0, (1 shl z) - 1)
+
+        /**
+         * Sprint 41: fixed 4x4 tile window centred on (lat, lon) - zoom from the
+         * WINDOW AROUND THE MARKER, not from the whole-track overview bbox:
+         *
+         * 1. camZoom   = followCameraZoom(overview) (screen shows ~FOLLOW_WINDOW_M);
+         * 2. mppTarget = screenGeoWidth * 0.9 / gridPx -> segment natives are ~10%
+         *    finer than screen pixels (steady-state stretch ~0.9, was ~1.9 at 40A);
+         * 3. dz        = round(log2(gridPx * camZoom * 1.0 / (ov.cropW * 0.9))),
+         *    capped so the segment still covers the frame at the switch moment
+         *    (camera ~87% of target, see FOLLOW_SWITCH) and z <= MAX_FOLLOW_ZOOM.
+         */
+        fun followCropInfo(
+            lat: Double,
+            lon: Double,
+            overview: CropInfo,
+            width: Int,
+            height: Int
+        ): CropInfo {
+            val camZoom = followCameraZoom(overview)
+            val midLat = (overview.minLat + overview.maxLat) / 2
+            val screenGeoW =
+                overview.cropW * metersPerPixel(midLat, overview.zoom) / camZoom
+            val mppTarget = screenGeoW * 0.9 / (FOLLOW_GRID * TILE_PX)
+            val mpp0 = TILE_MPP0 * cos(Math.toRadians(lat))
+            val zDensity = ln(mpp0 / mppTarget) / ln(2.0)
+            val camAtSwitch = 1f + FOLLOW_SWITCH * (camZoom - 1f)
+            val dzCoverage =
+                floor(ln(FOLLOW_GRID * TILE_PX * camAtSwitch * 0.95 / overview.cropW) / ln(2.0))
+            var dz = Math.round(zDensity - overview.zoom).toInt()
+            if (dz < 1) dz = 1
+            val dzCap = min(MAX_FOLLOW_ZOOM - overview.zoom, floor(dzCoverage).toInt())
+            if (dz > dzCap) dz = dzCap
+            if (dz < 1) dz = 1
+            val z = overview.zoom + dz
+            val g = FOLLOW_GRID
+            val cx = tileX(lon, z)
+            val cy = tileY(lat, z)
+            val half = g / 2
+            val maxT = (1 shl z) - 1
+            val x0 = (cx - half).coerceIn(0, (maxT - g + 1).coerceAtLeast(0))
+            val y0 = (cy - half).coerceIn(0, (maxT - g + 1).coerceAtLeast(0))
+            val fullW = g * TILE_PX
+            val fullH = g * TILE_PX
+            val fx = (fracX(lon, z) - x0) * TILE_PX
+            val fy = (fracY(lat, z) - y0) * TILE_PX
+            val aspect = width.toDouble() / height.coerceAtLeast(1)
+            var cropW = fullW
+            var cropH = (fullW / aspect).toInt().coerceIn(1, fullH)
+            if (cropH >= fullH) {
+                cropH = fullH
+                cropW = (fullH * aspect).toInt().coerceIn(1, fullW)
+            }
+            val left = (fx - cropW / 2.0).toInt().coerceIn(0, fullW - cropW)
+            val top = (fy - cropH / 2.0).toInt().coerceIn(0, fullH - cropH)
+            fun latitude(y: Double) =
+                Math.toDegrees(kotlin.math.atan(kotlin.math.sinh(Math.PI * (1 - 2 * y))))
+            val world = (1 shl z).toDouble() * TILE_PX
+            val minLon = ((x0 * TILE_PX + left) / world * 360.0 - 180.0).coerceIn(-180.0, 180.0)
+            val maxLon = ((x0 * TILE_PX + left + cropW) / world * 360.0 - 180.0).coerceIn(-180.0, 180.0)
+            val maxLat = latitude(((y0 * TILE_PX + top) / world).coerceIn(0.0, 1.0))
+            val minLat = latitude(((y0 * TILE_PX + top + cropH) / world).coerceIn(0.0, 1.0))
+            return CropInfo(
+                zoom = z,
+                x0 = x0,
+                y0 = y0,
+                leftPx = left,
+                topPx = top,
+                cropW = cropW,
+                cropH = cropH,
+                fullW = fullW,
+                fullH = fullH,
+                minLat = minLat,
+                maxLat = maxLat,
+                minLon = minLon,
+                maxLon = maxLon
+            )
+        }
     }
 
     /**
@@ -171,6 +351,239 @@ class MapSnapshotProvider @Inject constructor(
         val minLon: Double,
         val maxLon: Double
     )
+
+    /**
+     * Sprint 40A: follow-detail window around ONE marker position.
+     * Real tiles at [zoom] centred on (lat, lon): no upscaling of the overview
+     * mosaic. Same Esri z/y/x order and User-Agent as the overview path.
+     */
+    suspend fun followSnapshot(track: Track, progress: Float, width: Int, height: Int): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val pts = track.points
+            if (pts.isEmpty()) return@withContext null
+            val overview = cropInfo(track, width, height) ?: return@withContext null
+            val pos = RouteVideoMotion(pts).position(progress.coerceIn(0f, 1f))
+            val i = pos.toInt().coerceIn(0, pts.size - 1)
+            val j = (i + 1).coerceAtMost(pts.size - 1)
+            val t = (pos - i).coerceIn(0f, 1f)
+            val lat = pts[i].lat + (pts[j].lat - pts[i].lat) * t
+            val lon = pts[i].lon + (pts[j].lon - pts[i].lon) * t
+            val crop = followCropInfo(lat, lon, overview, width, height)
+            composeCrop(crop, "follow")
+        }
+
+    /** A crop plus its range of route progress. The renderer chooses by geographic containment. */
+    data class FollowCrop(
+        val info: CropInfo,
+        val startProgress: Float,
+        val endProgress: Float
+    )
+
+    data class FollowPrefetchReport(
+        val crops: List<FollowCrop>,
+        val expectedTiles: Int,
+        val readyTiles: Int,
+        val missingTiles: List<String>
+    ) {
+        val isComplete: Boolean get() = missingTiles.isEmpty() && readyTiles == expectedTiles
+    }
+
+    /**
+     * Number of windows whose centres are at most half a follow-window width apart.
+     * The hard cap fails instead of silently leaving large MOVE gaps.
+     */
+
+    /** Build the exact crop list once, shared by prefetch and cache-only stitching. */
+    fun buildFollowCrops(track: Track, width: Int, height: Int): List<FollowCrop> {
+        val pts = track.points
+        if (pts.isEmpty()) return emptyList()
+        val overview = cropInfo(track, width, height) ?: return emptyList()
+        val motion = RouteVideoMotion(pts)
+        val probe = followCropInfo(pts.first().lat, pts.first().lon, overview, width, height)
+        val midLat = (overview.minLat + overview.maxLat) / 2.0
+        val windowWidthM = probe.cropW * metersPerPixel(midLat, probe.zoom)
+        val routeLengthM = RouteVideoMotion(pts).lengthMeters()
+        val count = adaptiveFollowSegmentCount(routeLengthM, windowWidthM)
+        if (count > MAX_FOLLOW_SEGMENTS) {
+            throw IllegalStateException("follow needs $count segments, limit=$MAX_FOLLOW_SEGMENTS")
+        }
+        return (0 until count).map { k ->
+            val start = k.toFloat() / count
+            val end = (k + 1).toFloat() / count
+            val progress = (start + end) / 2f
+            val pos = motion.position(progress)
+            val i = pos.toInt().coerceIn(0, pts.size - 1)
+            val j = (i + 1).coerceAtMost(pts.size - 1)
+            val t = (pos - i).coerceIn(0f, 1f)
+            val lat = pts[i].lat + (pts[j].lat - pts[i].lat) * t
+            val lon = pts[i].lon + (pts[j].lon - pts[i].lon) * t
+            FollowCrop(followCropInfo(lat, lon, overview, width, height), start, end)
+        }
+    }
+
+    /**
+     * Fetches only missing tiles. Existing cache entries count as ready. Two rounds
+     * cover transient failures; the returned report is the single encode gate.
+     */
+    suspend fun prefetchFollowTiles(
+        track: Track,
+        width: Int,
+        height: Int
+    ): FollowPrefetchReport = withContext(Dispatchers.IO) {
+        val crops = buildFollowCrops(track, width, height)
+        val unique = LinkedHashSet<String>()
+        for (crop in crops) {
+            for (index in 0 until FOLLOW_GRID * FOLLOW_GRID) {
+                unique += "${crop.info.zoom}/${crop.info.x0 + index % FOLLOW_GRID}/${crop.info.y0 + index / FOLLOW_GRID}"
+            }
+        }
+        val keys = unique.toList()
+        val gate = Semaphore(4)
+        suspend fun downloadMissing(): List<String> {
+            val missing = keys.filter { TileDiskCache.load(cacheFileParts(it)) == null }
+            coroutineScope {
+                missing.map { key ->
+                    async {
+                        gate.withPermit {
+                            val parts = key.split('/')
+                            if (!currentCoroutineContext().isActive) return@withPermit
+                            val z = parts[0].toInt(); val x = parts[1].toInt(); val y = parts[2].toInt()
+                            val bitmap = downloadTileWithRetry(z, x, y) ?: return@withPermit
+                            TileDiskCache.store(cacheFileParts(key), bitmap)
+                            bitmap.recycle()
+                        }
+                    }
+                }.awaitAll()
+            }
+            return keys.filter { TileDiskCache.load(cacheFileParts(it)) == null }
+        }
+        var missing = downloadMissing()
+        if (missing.isNotEmpty()) missing = downloadMissing()
+        FollowPrefetchReport(crops, keys.size, keys.size - missing.size, missing)
+    }
+
+    /** Cache-only stitch of the exact crop list produced by prefetch. */
+    suspend fun followSnapshots(crops: List<FollowCrop>): List<FollowSegment> =
+        withContext(Dispatchers.IO) {
+            crops.map { FollowSegment(composeCropCached(it.info, "follow"), it.info) }
+        }
+
+    private suspend fun composeCropCached(crop: CropInfo, kind: String): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val zoom = crop.zoom
+            val x0 = crop.x0
+            val y0 = crop.y0
+            val fullW = crop.fullW
+            val fullH = crop.fullH
+            val full = Bitmap.createBitmap(fullW, fullH, Bitmap.Config.RGB_565)
+            val canvas = Canvas(full)
+            val tileCountX = fullW / TILE_PX
+            val tileCountY = fullH / TILE_PX
+            val gate = Semaphore(4)
+            val tiles = coroutineScope {
+                (0 until tileCountX * tileCountY).map { index ->
+                    async {
+                        gate.withPermit {
+                            if (!currentCoroutineContext().isActive) null
+                            else loadTileCached(
+                                zoom, x0 + index % tileCountX, y0 + index / tileCountX
+                            )
+                        }
+                    }
+                }.awaitAll()
+            }
+            finishCrop(full, canvas, tiles, tileCountX, crop, kind)
+        }
+
+    private fun finishCrop(
+        full: Bitmap,
+        canvas: Canvas,
+        tiles: List<Bitmap?>,
+        tileCountX: Int,
+        crop: CropInfo,
+        kind: String
+    ): Bitmap? {
+        val missingPaint = Paint().apply { color = Color.rgb(58, 63, 70) }
+        var loaded = 0
+        for ((index, tile) in tiles.withIndex()) {
+            val dx = ((index % tileCountX) * TILE_PX).toFloat()
+            val dy = ((index / tileCountX) * TILE_PX).toFloat()
+            if (tile == null) {
+                canvas.drawRect(dx, dy, dx + TILE_PX, dy + TILE_PX, missingPaint)
+            } else {
+                canvas.drawBitmap(tile, dx, dy, null)
+                tile.recycle()
+                loaded++
+            }
+        }
+        if (loaded != tiles.size) {
+            Log.i("MapSnapshot", "$kind null: tiles=$loaded/${tiles.size} -> strict follow gate")
+            full.recycle()
+            return null
+        }
+        val result = runCatching {
+            val cropped = Bitmap.createBitmap(full, crop.leftPx, crop.topPx, crop.cropW, crop.cropH)
+            val scaled = Bitmap.createScaledBitmap(cropped, crop.cropW, crop.cropH, true)
+            if (scaled !== cropped) cropped.recycle()
+            scaled
+        }.getOrNull()
+        full.recycle()
+        return result
+    }
+
+    private suspend fun composeCrop(crop: CropInfo, kind: String): Bitmap? =
+        withContext(Dispatchers.IO) {
+            val zoom = crop.zoom
+            val x0 = crop.x0
+            val y0 = crop.y0
+            val fullW = crop.fullW
+            val fullH = crop.fullH
+            val full = Bitmap.createBitmap(fullW, fullH, Bitmap.Config.RGB_565)
+            val canvas = Canvas(full)
+            val tileCountX = fullW / TILE_PX
+            val tileCountY = fullH / TILE_PX
+            val gate = Semaphore(4)
+            val tiles = coroutineScope {
+                (0 until tileCountX * tileCountY).map { index ->
+                    async {
+                        gate.withPermit {
+                            if (!currentCoroutineContext().isActive) null
+                            else {
+                                val x = x0 + index % tileCountX
+                                val y = y0 + index / tileCountX
+                                loadTile(zoom, x, y)
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+            val missingPaint = Paint().apply { color = Color.rgb(58, 63, 70) }
+            var loaded = 0
+            for ((index, tile) in tiles.withIndex()) {
+                val dx = ((index % tileCountX) * TILE_PX).toFloat()
+                val dy = ((index / tileCountX) * TILE_PX).toFloat()
+                if (tile == null) {
+                    canvas.drawRect(dx, dy, dx + TILE_PX, dy + TILE_PX, missingPaint)
+                } else {
+                    canvas.drawBitmap(tile, dx, dy, null)
+                    tile.recycle()
+                    loaded++
+                }
+            }
+            if (loaded * 2 < tiles.size) {
+                Log.i("MapSnapshot", "$kind null: sat tiles=$loaded/${tiles.size} -> schematic")
+                full.recycle()
+                return@withContext null
+            }
+            val result = runCatching {
+                val cropped = Bitmap.createBitmap(full, crop.leftPx, crop.topPx, crop.cropW, crop.cropH)
+                val scaled = Bitmap.createScaledBitmap(cropped, crop.cropW, crop.cropH, true)
+                if (scaled !== cropped) cropped.recycle()
+                scaled
+            }.getOrNull()
+            full.recycle()
+            result
+        }
 
     suspend fun snapshot(track: Track, width: Int, height: Int): Bitmap? =
         withContext(Dispatchers.IO) {
@@ -260,6 +673,11 @@ class MapSnapshotProvider @Inject constructor(
         // Separate namespace from the live-map tiles (different imagery source).
         TileDiskCache.file(context, "sat", z, x, y)
 
+    private fun cacheFileParts(key: String): File {
+        val p = key.split('/')
+        return cacheFile(p[0].toInt(), p[1].toInt(), p[2].toInt())
+    }
+
     private fun liveCacheFile(z: Int, x: Int, y: Int): File =
         TileDiskCache.file(context, "live2", z, x, y)
 
@@ -289,6 +707,19 @@ class MapSnapshotProvider @Inject constructor(
         TileDiskCache.store(file, bitmap)
         return bitmap
     }
+
+    /**
+     * Sprint 40: cache-only tile read. The encode loop must never hit the network:
+     * prefetch happens before encoding; a missing tile is a grey cell, never drift.
+     */
+    private fun loadTileCached(z: Int, x: Int, y: Int): Bitmap? =
+        TileDiskCache.load(cacheFile(z, x, y))
+
+    /** Sprint 40: follow stitch bound to the GIVEN crop (no recompute from marker). */
+    data class FollowSegment(
+        val bitmap: Bitmap?,
+        val info: CropInfo
+    )
 
     private fun loadTile(z: Int, x: Int, y: Int): Bitmap? {
         val file = cacheFile(z, x, y)
@@ -324,5 +755,28 @@ class MapSnapshotProvider @Inject constructor(
             connection.disconnect()
         }
     }.getOrNull()
+
+    /**
+     * Sprint 43: per-tile retry wrapper for the follow-camera prefetch. A transient
+     * 5xx / connection drop doesn't leave a grey cell; the caller's wall-clock
+     * timeout bounds the extra attempts.
+     */
+    private suspend fun downloadTileWithRetry(z: Int, x: Int, y: Int): Bitmap? {
+        for (attempt in 1..PREFETCH_TILE_RETRIES) {
+            val bmp = downloadTile(z, x, y)
+            if (bmp != null) return bmp
+            if (attempt < PREFETCH_TILE_RETRIES) {
+                val backoffMs = when (attempt) {
+                    1 -> 500L
+                    else -> 1500L
+                }
+                Log.i("MapSnapshot", "tile z=$z x=$x y=$y prefetch attempt $attempt failed, retry in ${backoffMs}ms")
+                delay(backoffMs)
+                if (!kotlinx.coroutines.currentCoroutineContext().isActive) return null
+            }
+        }
+        Log.i("MapSnapshot", "tile z=$z x=$x y=$y prefetch exhausted $PREFETCH_TILE_RETRIES attempts")
+        return null
+    }
 }
 

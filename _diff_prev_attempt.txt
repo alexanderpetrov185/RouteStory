@@ -1,9 +1,0 @@
-﻿ .../routestory/ui/screens/TrackingScreen.kt        |  3 +-
- .../com/alexander/routestory/utils/GeoUtils.kt     | 14 +++---
- .../com/alexander/routestory/utils/MapTiles.kt     |  7 ++-
- .../routestory/video/MapSnapshotProvider.kt        | 23 +++++-----
- patch1.py                                          | 28 ------------
- patch2.py                                          | 11 -----
- patch3.py                                          | 52 ----------------------
- patch4.py                                          | 12 -----
- 8 files changed, 27 insertions(+), 123 deletions(-)

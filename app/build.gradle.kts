@@ -15,8 +15,8 @@ android {
         applicationId = "com.alexander.routestory"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.0.1"
+        versionCode = 7
+        versionName = "0.0.2"
 
 
         // Optional free CARTO basemap key (dark live tiles). Set CARTO_API_KEY=... in
@@ -56,7 +56,6 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
-    implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.service)
@@ -82,5 +81,4 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
-    debugImplementation(libs.androidx.compose.ui.tooling)
 }
