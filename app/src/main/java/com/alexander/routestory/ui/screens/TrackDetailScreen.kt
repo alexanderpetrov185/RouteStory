@@ -44,6 +44,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Surface
@@ -342,6 +343,11 @@ fun TrackDetailScreen(
                         Text(stringResource(R.string.action_add_photos))
                     }
                 }
+                Text(
+                    text = stringResource(R.string.photo_vertical_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 OutlinedButton(
                     onClick = { showDeleteDialog = true },
                     modifier = Modifier.fillMaxWidth()
@@ -461,11 +467,16 @@ fun TrackDetailScreen(
     }
     if (showCreateVideoDialog) {
         var sfxEnabled by remember { mutableStateOf(keepSfx) }
+        // Sprint 49: explicit marker MOVE time; null = "let the app decide" (auto).
+        var targetMapSec by remember { mutableStateOf<Int?>(null) }
         AlertDialog(
             onDismissRequest = { showCreateVideoDialog = false },
             title = { Text(stringResource(R.string.action_create_video)) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(stringResource(R.string.music_default))
                     OutlinedButton(onClick = { pickMusicLauncher.launch(arrayOf("audio/*")) }) {
                         Text(stringResource(R.string.action_pick_music))
@@ -475,12 +486,57 @@ fun TrackDetailScreen(
                         androidx.compose.material3.Checkbox(sfxEnabled, onCheckedChange = { sfxEnabled = it })
                         Text(stringResource(R.string.video_sfx_toggle_full), Modifier.weight(1f))
                     }
+                    Text(
+                        text = stringResource(R.string.video_duration_title),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    val durationOptions = listOf(
+                        stringResource(R.string.video_duration_auto) to null,
+                        stringResource(R.string.video_duration_30) to 30,
+                        stringResource(R.string.video_duration_60) to 60,
+                        stringResource(R.string.video_duration_120) to 120
+                    )
+                    durationOptions.forEach { (label, seconds) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { targetMapSec = seconds },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = targetMapSec == seconds,
+                                onClick = { targetMapSec = seconds }
+                            )
+                            Text(label)
+                        }
+                    }
+                    Text(
+                        text = stringResource(R.string.video_duration_warning),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    targetMapSec?.let { mapSec ->
+                        val photoCount = minOf(track?.photos?.size ?: 0, if (isPro) 12 else 10)
+                        val hold = if (photoCount == 0) 0f else
+                            (maxOf(60f, (mapSec + 4) * 0.5f) / photoCount).coerceIn(1f, 5f)
+                        val extra = 15 + (hold * photoCount).toInt()
+                        Text(
+                            text = stringResource(
+                                R.string.video_duration_estimate,
+                                mapSec,
+                                mapSec + extra,
+                                extra
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     track?.let {
-                        viewModel.createVideo(it, sfxEnabled)
+                        viewModel.createVideo(it, sfxEnabled, targetMapSec)
                     }
                     showCreateVideoDialog = false
                 }) { Text(stringResource(R.string.action_start_video)) }

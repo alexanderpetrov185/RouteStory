@@ -19,6 +19,7 @@ import com.alexander.routestory.domain.TrackRepository
 import com.alexander.routestory.video.VideoExportUseCase
 import com.alexander.routestory.video.VideoLimits
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
@@ -86,13 +87,15 @@ class VideoExportService : LifecycleService() {
                 val bgmPath = intent?.getStringExtra(EXTRA_BGM_PATH)
                 // Sprint 43: SFX toggle rides the intent; absent extra = keep SFX (default on).
                 val keepSfx = intent?.getBooleanExtra(EXTRA_KEEP_SFX, true) ?: true
-                startExport(trackId, bgmPath, keepSfx)
+                // Sprint 49: explicit total clip length in seconds; absent/invalid = auto.
+                val targetSec = intent?.getIntExtra(EXTRA_TARGET_SEC, -1)?.takeIf { it > 0 }
+                startExport(trackId, bgmPath, keepSfx, targetSec)
             }
         }
         return START_REDELIVER_INTENT
     }
 
-    private fun startExport(trackId: Long, bgmPath: String? = null, keepSfx: Boolean = true) {
+    private fun startExport(trackId: Long, bgmPath: String? = null, keepSfx: Boolean = true, targetTotalSec: Int? = null) {
         // Single export at a time; a second START while one is running is a no-op.
         if (exportJob?.isActive == true || stateHolder.state.value is VideoExportState.Preparing || stateHolder.state.value is VideoExportState.Running) return
         if (trackId <= 0L) {
@@ -111,7 +114,8 @@ class VideoExportService : LifecycleService() {
                 val limits = VideoLimits.fitEncode(
                     proRepository.isPro.first(),
                     track.distance,
-                    track.photos.size
+                    track.photos.size,
+                    targetTotalSec
                 )
                 // Sprint 42: custom BGM path is optional; the encode falls back to bgm.wav.
                 // Sprint 43: keepSfx=false mutes the SFX cues (shutter/whoosh) but keeps BGM.
@@ -126,6 +130,13 @@ class VideoExportService : LifecycleService() {
                 } else if (stateHolder.state.value !is VideoExportState.Idle) {
                     stateHolder.setFailed(trackId)
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // UseCase already logs the full stack; the service boundary must not leave
+                // Preparing forever or let a service exception disappear without a Failed state.
+                Log.e(TAG, "export failed for track $trackId target=${targetTotalSec ?: "auto"}s", e)
+                stateHolder.setFailed(trackId)
             } finally {
                 // Runs on normal completion, failure and shade cancellation alike.
                 stopSelf()
@@ -271,6 +282,8 @@ class VideoExportService : LifecycleService() {
         const val EXTRA_BGM_PATH = "bgmPath"
         /** Sprint 43: when false, the SFX cues (shutter/whoosh) are muted; default true. */
         const val EXTRA_KEEP_SFX = "keepSfx"
+        /** Sprint 49: explicit TOTAL clip length in seconds (30/60/120/180); absent = auto. */
+        const val EXTRA_TARGET_SEC = "targetSec"
         private const val CHANNEL_ID = "video_export"
         /** Finished-clip channel: IMPORTANCE_DEFAULT so the "done" notification is visible. */
         private const val DONE_CHANNEL_ID = "video_export_done"

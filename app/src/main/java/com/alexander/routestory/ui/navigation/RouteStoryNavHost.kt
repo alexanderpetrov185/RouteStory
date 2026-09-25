@@ -13,12 +13,14 @@ import com.alexander.routestory.domain.TrackingState
 import com.alexander.routestory.service.TrackSaveOutcome
 import com.alexander.routestory.ui.screens.HistoryScreen
 import com.alexander.routestory.ui.screens.ProScreen
+import com.alexander.routestory.ui.screens.SplashScreen
 import com.alexander.routestory.ui.screens.HomeScreen
 import com.alexander.routestory.ui.screens.TrackDetailScreen
 import com.alexander.routestory.ui.screens.TrackingScreen
 
 /** Route constants for app navigation. */
 object Routes {
+    const val SPLASH = "splash"
     const val HOME = "home"
     const val TRACKING = "tracking"
     const val HISTORY = "history"
@@ -55,7 +57,9 @@ fun RouteStoryNavHost(
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
 
     // Stop (in-app button or notification action): show the summary of the stored ride.
-    LaunchedEffect(saveOutcome) {
+    LaunchedEffect(saveOutcome, currentRoute) {
+        // Deferred while the splash is up (Sprint 49); re-fires once Home is the route.
+        if (currentRoute == null || currentRoute == Routes.SPLASH) return@LaunchedEffect
         val outcome = saveOutcome as? TrackSaveOutcome.Saved ?: return@LaunchedEffect
         navController.navigate(Routes.trackSummary(outcome.trackId)) {
             popUpTo(Routes.HOME)
@@ -66,7 +70,8 @@ fun RouteStoryNavHost(
     }
 
     // The ride was stored while no window existed: open its summary on this start.
-    LaunchedEffect(pendingSummaryTrackId) {
+    LaunchedEffect(pendingSummaryTrackId, currentRoute) {
+        if (currentRoute == null || currentRoute == Routes.SPLASH) return@LaunchedEffect
         val id = pendingSummaryTrackId ?: return@LaunchedEffect
         navController.navigate(Routes.trackSummary(id)) {
             popUpTo(Routes.HOME)
@@ -76,7 +81,8 @@ fun RouteStoryNavHost(
     }
 
     // "Видео готово" notification tap: open that ride WITHOUT autoplay (Sprint 47).
-    LaunchedEffect(pendingTrackId) {
+    LaunchedEffect(pendingTrackId, currentRoute) {
+        if (currentRoute == null || currentRoute == Routes.SPLASH) return@LaunchedEffect
         val id = pendingTrackId ?: return@LaunchedEffect
         navController.navigate(Routes.trackDetail(id)) {
             popUpTo(Routes.HOME)
@@ -88,7 +94,8 @@ fun RouteStoryNavHost(
     // An active ride always wins over Home when the UI appears (notification tap, return from
     // background after a pause). Only keyed on the state, so going Back to Home on purpose is
     // not undone.
-    LaunchedEffect(rideState, openTrackingRequest) {
+    LaunchedEffect(rideState, openTrackingRequest, currentRoute) {
+        if (currentRoute == null || currentRoute == Routes.SPLASH) return@LaunchedEffect
         if (rideState == TrackingState.IDLE) return@LaunchedEffect
         if (currentRoute == Routes.TRACKING) return@LaunchedEffect
         navController.navigate(Routes.TRACKING) { launchSingleTop = true }
@@ -96,9 +103,20 @@ fun RouteStoryNavHost(
 
     NavHost(
         navController = navController,
-        startDestination = Routes.HOME,
+        startDestination = Routes.SPLASH,
         modifier = modifier
     ) {
+        // Sprint 49: logo + app name for ~1 s, then Home (splash popped off the stack).
+        composable(Routes.SPLASH) {
+            SplashScreen(
+                onReady = {
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.SPLASH) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+            )
+        }
         composable(Routes.HOME) {
             HomeScreen(
                 onStartTracking = { navController.navigate(Routes.TRACKING) },

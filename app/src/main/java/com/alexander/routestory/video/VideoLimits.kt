@@ -55,28 +55,60 @@ data class VideoLimits(
         const val MIN_ENCODE_FPS = 10
 
         /**
-         * Sprint 41: choose (fps, durationSec) whose timeline fits [MAX_ENCODE_FRAMES].
-         * Sprint 47 shrink order: fps first, then map seconds - durationSec carries the
-         * marker tempo (long rides must stay slow), fps gives up to [MIN_ENCODE_FPS].
-         * Photo holds are already budgeted inside RouteVideoTimeline
-         * (PHOTO_PAUSE_BUDGET_SEC).
+         * Fixed blocks outside the selected marker MOVE: intro 4 + map tilt 2 +
+         * camera zoom 2 + finish 5 + outro 2. Photo holds are additional.
          */
-        fun fitEncode(isPro: Boolean, distanceMeters: Float, photoCount: Int): VideoLimits {
+        const val FIXED_NON_MOVE_SEC = 15
+        /** Auto and explicit map-movement budget both stop at two minutes. */
+        const val MAX_MAP_MOVE_SEC = 120
+        /** Total photo-pause budget; per-photo hold never exceeds 5 s. */
+        private const val PHOTO_PAUSE_BUDGET_SEC = 60f
+        private const val MAX_PHOTO_HOLD_SEC = 5f
+        private const val MIN_PHOTO_HOLD_SEC = 1f
+
+        /**
+         * Chosen [targetMapSec] is the clean MOVE time in which the marker travels.
+         * VideoLimits.durationSec includes the four stationary map-camera seconds, while
+         * intro/finish/outro and actual photo holds remain additional to that value.
+         */
+        fun fitEncode(
+            isPro: Boolean,
+            distanceMeters: Float,
+            photoCount: Int,
+            targetMapSec: Int? = null
+        ): VideoLimits {
             val base = resolve(isPro, distanceMeters)
-            var fps = base.fps
-            var sec = base.durationSec
-            fun totalFrames(s: Int, f: Int): Int {
-                val introOutro = ((4f + 2f) * f).toInt()
-                val map = s * f
-                // Upper bound of photo pauses: budgeted hold is <= 5 s per photo and
-                // total pause budget is max(60 s, 50% of map); use the worst case.
-                val photoSec = minOf(photoCount * 5f, maxOf(60f, s * 0.5f))
-                return introOutro + map + (photoSec * f).toInt()
+            val cameraIntroSec = 4 // TILT_SEC + ZOOM_SEC from RouteVideoTimeline.
+            fun photoPauseSec(durationSec: Int): Int {
+                val count = minOf(photoCount, base.maxPhotos).coerceAtLeast(0)
+                if (count == 0) return 0
+                val hold = (maxOf(PHOTO_PAUSE_BUDGET_SEC, durationSec * 0.5f) / count)
+                    .coerceIn(MIN_PHOTO_HOLD_SEC, MAX_PHOTO_HOLD_SEC)
+                return (hold * count).toInt()
             }
-            while (totalFrames(sec, fps) > MAX_ENCODE_FRAMES && fps > MIN_ENCODE_FPS) fps--
-            while (totalFrames(sec, fps) > MAX_ENCODE_FRAMES && sec > MIN_ENCODE_SEC) sec--
-            return if (sec == base.durationSec && fps == base.fps) base
-            else base.copy(durationSec = sec, fps = fps)
+            fun totalFrames(mapSec: Int, f: Int): Int {
+                val durationSec = mapSec + cameraIntroSec
+                return (durationSec + FIXED_NON_MOVE_SEC - cameraIntroSec +
+                    photoPauseSec(durationSec)) * f
+            }
+
+            val requestedMapSec = if (targetMapSec != null) {
+                targetMapSec.coerceIn(MIN_ENCODE_SEC, MAX_MAP_MOVE_SEC)
+            } else {
+                base.durationSec.coerceIn(MIN_ENCODE_SEC, MAX_MAP_MOVE_SEC)
+            }
+            var fps = base.fps
+            var mapSec = requestedMapSec
+            while (totalFrames(mapSec, fps) > MAX_ENCODE_FRAMES && fps > MIN_ENCODE_FPS) fps--
+            // Explicit choices keep their marker MOVE time; auto may also shorten the
+            // map part so fixed cards + photos do not grow without a controlled budget.
+            if (targetMapSec == null) {
+                while (totalFrames(mapSec, fps) > MAX_ENCODE_FRAMES &&
+                    mapSec > MIN_ENCODE_SEC) mapSec--
+            }
+            val durationSec = mapSec + cameraIntroSec
+            return if (durationSec == base.durationSec && fps == base.fps) base
+            else base.copy(durationSec = durationSec, fps = fps)
         }
 
         /**

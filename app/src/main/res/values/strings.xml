@@ -92,5 +92,16 @@
 
     <string name="action_rename">Переименовать</string>
     <string name="home_subtitle">Записывайте маршрут и превращайте его в видео</string>
+
+    <!-- Sprint 49: hint next to "Добавить фото" (non-blocking). -->
+    <string name="photo_vertical_hint">Лучше снимать вертикально — так фото лучше в видео и на весь экран.</string>
+    <!-- Sprint 49: marker MOVE duration choice in CreateVideoDialog. -->
+    <string name="video_duration_title">Время движения по маршруту</string>
+    <string name="video_duration_auto">Пусть приложение решит</string>
+    <string name="video_duration_30">30 с</string>
+    <string name="video_duration_60">1 мин</string>
+    <string name="video_duration_120">2 мин</string>
+    <string name="video_duration_warning">Выбранное время — это движение маркера по карте. Интро, наклон и приближение камеры, финиш, фото и outro добавят сверху. Итоговый файл будет длиннее; дольше маркер движется медленнее, а создание видео занимает больше времени.</string>
+    <string name="video_duration_estimate">При выбранных %1$d с итоговый файл будет около %2$d с. Фотографии, интро, финиш и outro добавят примерно %3$d с.</string>
 </resources>
 

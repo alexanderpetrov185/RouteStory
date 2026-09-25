@@ -147,9 +147,6 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         const val PERSPECTIVE_Z = 1800f
     }
 
-    /** Sprint 34: cross-fade paint for the close-up background layer. */
-    private val crossFadePaint = Paint(Paint.FILTER_BITMAP_FLAG)
-
     /**
      * Sprint 41: brightened copies cached per source bitmap in a small LRU
      * (overview + up to 6 follow segments alternate during MOVE; a single slot
@@ -325,59 +322,6 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private fun cropInfo(track: Track, w: Int, h: Int): MapSnapshotProvider.CropInfo? =
         MapSnapshotProvider.cropInfo(track, w, h)
 
-    /**
-     * Sprint 40A: nearest prebuilt follow segment for this frame.
-     * Same distance progress as the marker (no drift between tiles and route).
-     */
-    /** Sprint 40: index/state of the nearest prebuilt follow segment. */
-    private fun followSegmentIndex(
-        frame: Int,
-        timeline: RouteVideoTimeline?,
-        segments: List<MapSnapshotProvider.FollowSegment>
-    ): Int {
-        if (segments.isEmpty() || timeline == null) return -1
-        // Sprint 41: hold back the sharp segment until the camera is near its
-        // target zoom (see FOLLOW_SWITCH) so the rect can cover the frame.
-        if (timeline.followBlend(frame) < FOLLOW_SWITCH) return -1
-        val progress = timeline.mapProgress(frame).coerceIn(0f, 1f)
-        return ((progress * segments.size).toInt()).coerceIn(0, segments.size - 1)
-    }
-
-    private fun pickFollowSegment(
-        frame: Int,
-        timeline: RouteVideoTimeline?,
-        segments: List<MapSnapshotProvider.FollowSegment>
-    ): MapSnapshotProvider.FollowSegment? {
-        val idx = followSegmentIndex(frame, timeline, segments)
-        if (idx < 0) return null
-        return segments[idx].takeIf { it.bitmap != null }
-    }
-
-    /** Select the ready window whose geographic rect actually contains the camera centre. */
-    private fun containingFollowIndex(
-        progress: Float,
-        segments: List<MapSnapshotProvider.FollowSegment>,
-        overview: MapSnapshotProvider.CropInfo?,
-        centerX: Float,
-        centerY: Float,
-        w: Float,
-        h: Float
-    ): Int {
-        if (segments.isEmpty() || overview == null) return -1
-        val containing = segments.indices.filter { index ->
-            val rect = MapSnapshotProvider.followRectInOverview(segments[index].info, overview, w.toInt(), h.toInt())
-            rect != null && centerX >= rect[0] && centerX <= rect[2] &&
-                centerY >= rect[1] && centerY <= rect[3]
-        }
-        if (containing.isNotEmpty()) {
-            return containing.minByOrNull { candidate ->
-                kotlin.math.abs(candidate - (progress * segments.size).toInt())
-            } ?: -1
-        }
-        // Adaptive windows must cover MOVE. This is an error signal, not a visual fallback.
-        android.util.Log.e("MapSnapshot", "follow camera outside all prepared windows progress=$progress")
-        return -1
-    }
 
     /**
      * Sprint 40A: follow-segment Mercator projection from the same marker-centred
@@ -496,7 +440,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     ) {
         val tl = timeline ?: timelineFor(track, frameCount)
         val preliminaryFollow = if (tl.followBlend(frame) >= FOLLOW_SWITCH && followSegments.isNotEmpty())
-            followSegments[followSegmentIndex(frame, tl, followSegments).coerceAtLeast(0)].bitmap else null
+            followSegments[((tl.mapProgress(frame) * followSegments.size).toInt())
+                .coerceIn(0, followSegments.size - 1)].bitmap else null
         val closeUpBackground = preliminaryFollow
         val w = canvas.width.toFloat()
         val h = canvas.height.toFloat()
@@ -599,7 +544,10 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         // Sprint 41: the MOVE camera zoom targets a fixed geo window around the
         // marker (followCameraZoom), so long rides no longer pull away; short
         // rides keep the classic 4x. ZOOM still glides 1 -> target smoothly.
-        val zoomOut = if (tl.isOutro(frame)) tl.outroZoomOut(frame) else 0f
+        // Sprint 49: FINISH pulls the camera back to the full-route overview (zoom -> 1)
+        // and the outro keeps that overview static until the card.
+        val finishT = tl.finishAmount(frame)
+        val zoomOut = if (tl.isOutro(frame)) 1f else finishT
         val camTarget = overviewCrop?.let { MapSnapshotProvider.followCameraZoom(it) } ?: 6f
         val zoomRamp = (1f + (camTarget - 1f) * tl.zoomAmount(frame)) * (1f + 0.35f * boost)
         val cameraZoom = zoomRamp * (1f - zoomOut) + zoomOut
@@ -609,40 +557,68 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         // In the ZOOM phase it glides from the frame centre onto the start marker;
         // in MOVE (follow >= 0.5) it is locked to the marker so the camera can
         // never drift away.
-        val centerX = if (follow >= 0.5f) baseX else (w / 2 + (baseX - w / 2) * follow)
-        val centerY = if (follow >= 0.5f) baseY else (h / 2 + (baseY - h / 2) * follow)
+        val rawCenterX = if (follow >= 0.5f) baseX else (w / 2 + (baseX - w / 2) * follow)
+        val rawCenterY = if (follow >= 0.5f) baseY else (h / 2 + (baseY - h / 2) * follow)
+        // Sprint 49: while pulling back, pan from the marker to the overview centre so
+        // the whole route lands in the frame; the outro stays centred.
+        val centerX = w / 2 + (rawCenterX - w / 2) * (1f - finishT)
+        val centerY = h / 2 + (rawCenterY - h / 2) * (1f - finishT)
         fun project(lat: Double, lon: Double): Pair<Float, Float> {
             val (x, y) = baseProject(lat, lon)
             return (x - centerX) * cameraZoom + w / 2 to (y - centerY) * cameraZoom + h / 2
         }
-        // Sprint 40A: one background per frame. Hard switch at followBlend >= 0.5:
-        // the follow segment is shown whenever the camera has zoomed in far enough,
-        // otherwise the overview. No per-frame alpha cross-fade of two stacked
-        // bitmaps - a single drawBitmap keeps the follow crisp and the encoder fast.
-        val followIdx = if (follow >= FOLLOW_SWITCH && !tl.isOutro(frame)) {
-            val idx = if (followSegments.all { it.bitmap != null }) {
-                containingFollowIndex(tl.mapProgress(frame), followSegments, overviewCrop, centerX, centerY, w, h)
-            } else -1
-            check(idx >= 0) { "MOVE requires a complete containing follow segment" }
-            idx
-        } else -1
-        val switchCloseUp = followIdx >= 0
-        if (switchCloseUp || ((follow < FOLLOW_SWITCH || tl.isOutro(frame)) && background != null)) {
+        // Sprint 40A: one background per frame. After follow reaches [FOLLOW_SWITCH],
+        // choose one prepared segment with the greatest camera coverage. No alpha
+        // cross-fade and no overview fallback while MOVE is active.
+        data class FollowLayer(
+            val index: Int,
+            val rect: android.graphics.RectF,
+            val bitmap: Bitmap,
+            val coverage: Float
+        )
+        fun layer(index: Int): FollowLayer? {
+            if (index !in followSegments.indices) return null
+            val segment = followSegments[index]
+            val bitmap = segment.bitmap ?: return null
+            val rect = followRectInOverview(segment.info, overviewCrop, w, h) ?: return null
+            val requiredLeft = centerX - w / (2f * cameraZoom)
+            val requiredTop = centerY - h / (2f * cameraZoom)
+            val requiredRight = centerX + w / (2f * cameraZoom)
+            val requiredBottom = centerY + h / (2f * cameraZoom)
+            val overlapW = (minOf(rect.right, requiredRight) - maxOf(rect.left, requiredLeft))
+                .coerceAtLeast(0f)
+            val overlapH = (minOf(rect.bottom, requiredBottom) - maxOf(rect.top, requiredTop))
+                .coerceAtLeast(0f)
+            val requiredArea = (w / cameraZoom) * (h / cameraZoom)
+            val coverage = (overlapW * overlapH) / requiredArea.coerceAtLeast(1f)
+            return FollowLayer(index, rect, bitmap, coverage)
+        }
+        val isMove = follow >= FOLLOW_SWITCH && !tl.isFinish(frame)
+        val candidates = if (isMove) followSegments.indices.mapNotNull(::layer) else emptyList()
+        val sharpLayer = candidates.maxByOrNull { it.coverage }
+        val usedOverview = background != null && sharpLayer == null && !isMove
+        if (frame % 30 == 0 && isMove) {
+            android.util.Log.d(
+                "VideoExport",
+                "follow segmentIndex=${sharpLayer?.index ?: -1} " +
+                    "coversFrame=${sharpLayer != null && sharpLayer.coverage >= 0.999f} " +
+                    "coverage=${"%.3f".format(sharpLayer?.coverage ?: 0f)} usedOverview=false"
+            )
+        }
+        if (usedOverview || sharpLayer != null) {
             canvas.save()
             canvas.translate(w / 2, h / 2)
             canvas.scale(cameraZoom, cameraZoom)
             canvas.translate(-centerX, -centerY)
-            if (!switchCloseUp) {
+            if (usedOverview) {
                 background?.let {
                     canvas.drawBitmap(brightenOnce(it), null,
                         android.graphics.RectF(0f, 0f, w, h), null)
                 }
-            }
-            if (switchCloseUp) {
-                val seg = followSegments[followIdx]
-                val dst = checkNotNull(followRectInOverview(seg.info, overviewCrop, w, h))
-                val bmp = checkNotNull(seg.bitmap)
-                canvas.drawBitmap(brightenOnce(bmp), null, dst, null)
+            } else {
+                sharpLayer?.let { layer ->
+                    canvas.drawBitmap(brightenOnce(layer.bitmap), null, layer.rect, null)
+                }
             }
             canvas.restore()
         }

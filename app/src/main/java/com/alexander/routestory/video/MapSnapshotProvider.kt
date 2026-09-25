@@ -33,7 +33,12 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.tan
 
-internal const val MAX_FOLLOW_SEGMENTS = 32
+/**
+ * Sprint 49: one stitched RGB_565 follow crop is at most 1536x1536 (about 4.5 MiB).
+ * 48 segments cover long rides while keeping the follow bitmap batch bounded at
+ * roughly 220 MiB before the overview; the exact count is logged on failure.
+ */
+internal const val MAX_FOLLOW_SEGMENTS = 48
 
 /** Hard budget for follow bitmaps held in memory during one export. */
 
@@ -45,9 +50,12 @@ internal const val MAX_FOLLOW_SEGMENTS = 32
 internal fun followTileZoom(overviewZoom: Int): Int =
     (overviewZoom + 1).coerceIn(0, MAX_FOLLOW_ZOOM)
 
-internal const val MAX_FOLLOW_ZOOM = 18
-internal const val FOLLOW_GRID = 4
+internal const val MAX_FOLLOW_ZOOM = 19
+internal const val FOLLOW_GRID = 6
 internal const val FOLLOW_SEGMENTS = 6
+
+/** Short cross-fade at a prepared-window boundary, expressed in segment progress. */
+internal const val FOLLOW_CROSSFADE = 0.12f
 
 /** Sprint 41: Web-Mercator meters per pixel at zoom 0 on the equator. */
 internal const val TILE_MPP0 = 156_543.03392
@@ -64,12 +72,15 @@ internal const val FOLLOW_ZOOM_MULTIPLIER = 1.5f
  */
 internal const val FOLLOW_SWITCH = 0.85f
 
+/** Adjacent follow-window centres are 45% apart, leaving geographic overlap for a seamless swap. */
+internal const val FOLLOW_WINDOW_STEP_RATIO = 0.45
+
+
 /** Sprint 43: per-tile retry attempts for the follow-camera prefetch. */
 internal const val PREFETCH_TILE_RETRIES = 3
-
-/** n = ceil(routeLength / (windowWidth / 2)) + 1. */
+/** n = ceil(routeLength / (45% follow-window width)) + 1; centres overlap by design. */
 internal fun adaptiveFollowSegmentCount(routeLengthMeters: Double, windowWidthMeters: Double): Int {
-    val step = (windowWidthMeters / 2.0).coerceAtLeast(1.0)
+    val step = (windowWidthMeters * FOLLOW_WINDOW_STEP_RATIO).coerceAtLeast(1.0)
     return kotlin.math.ceil(routeLengthMeters / step).toInt() + 1
 }
 
@@ -221,6 +232,26 @@ class MapSnapshotProvider @Inject constructor(
                 (left + seg.cropW * scaleX / factor).toFloat(),
                 (top + seg.cropH * scaleY / factor).toFloat()
             )
+        }
+
+        /** True when [rect] covers the camera-transformed frame without edge gaps. */
+        fun followRectCoversFrame(
+            rect: FloatArray,
+            centerX: Float,
+            centerY: Float,
+            cameraZoom: Float,
+            width: Float,
+            height: Float
+        ): Boolean {
+            if (rect.size < 4 || cameraZoom <= 0f) return false
+            fun sourceX(screenX: Float) = centerX + (screenX - width / 2f) / cameraZoom
+            fun sourceY(screenY: Float) = centerY + (screenY - height / 2f) / cameraZoom
+            val left = sourceX(0f)
+            val top = sourceY(0f)
+            val right = sourceX(width)
+            val bottom = sourceY(height)
+            return left >= rect[0] && top >= rect[1] &&
+                right <= rect[2] && bottom <= rect[3]
         }
 
         private fun pickZoom(

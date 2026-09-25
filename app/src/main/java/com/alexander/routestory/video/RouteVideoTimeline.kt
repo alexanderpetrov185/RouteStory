@@ -45,6 +45,12 @@ class RouteVideoTimeline(
     val outroFrames: Int = (OUTRO_SEC * fps).roundToInt().coerceAtLeast(1)
 
     /**
+     * Sprint 49: marker holds on the FINISH for [FINISH_SEC] before the outro card,
+     * so the total clip length is intro + map + photos + finish + outro.
+     */
+    val finishFrames: Int = (FINISH_SEC * fps).roundToInt().coerceAtLeast(1)
+
+    /**
      * Sprint 35: cap for the total photo-pause duration in seconds. When many photos would
      * add more pause time than this, the per-photo hold is shrunk (never below 1.0 s) so a
      * photo-heavy export still finishes within a reasonable wall-clock encode window.
@@ -204,15 +210,21 @@ class RouteVideoTimeline(
      */
     fun insertFraction(index: Int): Float = fractions.getOrElse(index) { 0f }
 
-    val totalFrames: Int get() = introFrames + baseFrames + photoCount * holdFrames + outroFrames
+    val totalFrames: Int get() = introFrames + baseFrames + photoCount * holdFrames + finishFrames + outroFrames
 
     /** True while [frame] belongs to the intro title card. */
     fun isIntro(frame: Int): Boolean = frame < introFrames
 
+    /** First frame of the Sprint 49 FINISH section (marker holds at the route end). */
+    val finishStartFrame: Int get() = introFrames + baseFrames + photoCount * holdFrames
+
+    /** True while the marker holds on the finish, before the outro (Sprint 49). */
+    fun isFinish(frame: Int): Boolean = frame >= finishStartFrame && frame < outroStartFrame
+
     /** True when [frame] belongs to either map zoom-out or the final outro card. */
     fun isOutro(frame: Int): Boolean = frame >= outroStartFrame
 
-    val outroStartFrame: Int get() = introFrames + baseFrames + photoCount * holdFrames
+    val outroStartFrame: Int get() = finishStartFrame + finishFrames
 
     /** First OUTRO_ZOOM_SEC renders the map; later frames render the card. */
     fun isOutroCard(frame: Int): Boolean = frame >= outroStartFrame + outroZoomFrames
@@ -220,10 +232,15 @@ class RouteVideoTimeline(
     val outroZoomFrames: Int = (OUTRO_ZOOM_SEC * fps).roundToInt()
         .coerceIn(1, (outroFrames - 1).coerceAtLeast(1))
 
-    /** Smooth 0..1 map zoom-to-overview during the transition. */
-    fun outroZoomOut(frame: Int): Float {
-        if (frame < outroStartFrame) return 0f
-        val t = ((frame - outroStartFrame).toFloat() / outroZoomFrames.coerceAtLeast(1))
+    /**
+     * Sprint 49: smooth 0..1 pull-back over the FINISH section (camera returns to the
+     * full-route overview and the tilt straightens); stays 1 through the outro so the
+     * overview holds until the card takes over.
+     */
+    fun finishAmount(frame: Int): Float {
+        if (frame < finishStartFrame) return 0f
+        if (frame >= outroStartFrame) return 1f
+        val t = ((frame - finishStartFrame).toFloat() / finishFrames.coerceAtLeast(1))
             .coerceIn(0f, 1f)
         return t * t * (3f - 2f * t)
     }
@@ -234,12 +251,18 @@ class RouteVideoTimeline(
     /** 0..1 tilt ramp over [tiltFrames]; marker stands still while < 1. */
     fun tiltAmount(frame: Int): Float {
         if (isIntro(frame)) return 0f
-        if (isOutro(frame)) return 1f
+        if (isOutro(frame)) return 0f
         val mf = mapFrameOf(frame)
-        if (mf <= 0) return 0f
-        if (mf >= tiltFrames) return 1f
-        val t = mf.toFloat() / tiltFrames
-        return t * t * (3 - 2 * t)
+        val ramp = when {
+            mf <= 0 -> 0f
+            mf >= tiltFrames -> 1f
+            else -> {
+                val t = mf.toFloat() / tiltFrames
+                t * t * (3 - 2 * t)
+            }
+        }
+        // Sprint 49: the FINISH straightens the camera 30° -> 0°; the outro stays flat.
+        return ramp * (1f - finishAmount(frame))
     }
 
     /** 0..1 zoom ramp over [zoomFrames] right after tilt; marker still stands. */
@@ -458,6 +481,8 @@ class RouteVideoTimeline(
         /** Title cards, trimmed so static frames don't eat the encode budget. */
         const val INTRO_SEC = 4f
         const val OUTRO_SEC = 2f
+        /** Sprint 49: marker holds on the finish for this long before the outro card. */
+        const val FINISH_SEC = 5f
         /** First second of OUTRO is a live map zoom-out; the rest is the existing card. */
         const val OUTRO_ZOOM_SEC = 1f
         /** TILT + ZOOM intros before MOVE: marker stands still. */

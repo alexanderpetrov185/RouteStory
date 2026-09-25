@@ -34,8 +34,8 @@ class RouteVideoTimelineTest {
     fun `no photos keeps the plain map duration`() {
         val timeline = RouteVideoTimeline(track(), fps = 15, durationSec = 12, maxPhotos = 10)
         assertEquals(0, timeline.photoCount)
-        // 4 s intro + 12 s map + 2 s outro, 15 fps.
-        assertEquals(60 + timeline.baseFrames + 30, timeline.totalFrames)
+        // 4 s intro + 12 s map + 5 s finish + 2 s outro, 15 fps.
+        assertEquals(60 + timeline.baseFrames + timeline.finishFrames + 30, timeline.totalFrames)
         assertNull(timeline.photoAt(0))
         assertNull(timeline.photoAt(timeline.totalFrames - 1))
     }
@@ -64,8 +64,8 @@ class RouteVideoTimelineTest {
         val timeline = RouteVideoTimeline(track, fps = 15, durationSec = 12, maxPhotos = 10)
         assertEquals(2, timeline.photoCount)
         // Sprint 35: each pause is 5 s (PHOTO_HOLD_SEC) = 75 frames at 15 fps.
-        // 60 intro + the tempo-safe map base + 2 * 75 pauses + 30 outro.
-        assertEquals(60 + timeline.baseFrames + 2 * 75 + 30, timeline.totalFrames)
+        // 60 intro + the tempo-safe map base + 2 * 75 pauses + finish + 30 outro.
+        assertEquals(60 + timeline.baseFrames + 2 * 75 + timeline.finishFrames + 30, timeline.totalFrames)
     }
 
     @Test
@@ -292,5 +292,48 @@ class RouteVideoTimelineTest {
             assertEquals("at i=$i", i / 100f, v, 0.001f)
             prev = v
         }
+    }
+
+    @Test
+    fun `finish section holds the marker before the outro`() {
+        val timeline = RouteVideoTimeline(track(), fps = 15, durationSec = 12, maxPhotos = 10)
+        // Sprint 49: 5 s finish at 15 fps between the map and the outro.
+        assertEquals(5 * 15, timeline.finishFrames)
+        assertEquals(timeline.finishStartFrame, timeline.outroStartFrame - timeline.finishFrames)
+        assertEquals((4 + 12 + 5 + 2) * 15, timeline.totalFrames)
+        // The marker sits at the route end for the whole finish.
+        assertEquals(1f, timeline.mapProgress(timeline.finishStartFrame), 0.0001f)
+        assertEquals(1f, timeline.mapProgress(timeline.outroStartFrame - 1), 0.0001f)
+        assertTrue(timeline.isFinish(timeline.finishStartFrame))
+        assertTrue(!timeline.isFinish(timeline.outroStartFrame))
+        assertNull(timeline.photoAt(timeline.finishStartFrame))
+    }
+
+    @Test
+    fun `finish pulls back to the overview and straightens the tilt`() {
+        val timeline = RouteVideoTimeline(track(), fps = 15, durationSec = 12, maxPhotos = 10)
+        val fin = timeline.finishStartFrame
+        val out = timeline.outroStartFrame
+        // finishAmount: 0 at the finish start, smooth through the middle, 1 at the outro.
+        assertEquals(0f, timeline.finishAmount(fin), 0.0001f)
+        val mid = timeline.finishAmount(fin + timeline.finishFrames / 2)
+        assertTrue("mid=$mid", mid > 0.2f && mid < 0.8f)
+        assertEquals(1f, timeline.finishAmount(out), 0.0001f)
+        assertEquals(1f, timeline.finishAmount(out + 5), 0.0001f)
+        // Monotonic pull-back.
+        var prev = -1f
+        for (f in fin until out) {
+            val v = timeline.finishAmount(f)
+            assertTrue("v=$v prev=$prev at f=$f", v >= prev - 1e-6f)
+            prev = v
+        }
+        // Tilt straightens 30° -> 0° (amount 1 -> 0) and the outro stays flat.
+        assertEquals(1f, timeline.tiltAmount(fin), 0.0001f)
+        assertTrue(timeline.tiltAmount(fin + timeline.finishFrames / 2) < 1f)
+        assertEquals(0f, timeline.tiltAmount(out), 0.0001f)
+        assertEquals(0f, timeline.tiltAmount(out + 5), 0.0001f)
+        // The map is still flat at the intro and fully tilted through MOVE.
+        assertEquals(0f, timeline.tiltAmount(0), 0.0001f)
+        assertEquals(1f, timeline.tiltAmount(timeline.introFrames + timeline.tiltFrames), 0.0001f)
     }
 }

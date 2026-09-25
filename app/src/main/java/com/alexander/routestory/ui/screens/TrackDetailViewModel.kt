@@ -95,7 +95,7 @@ class TrackDetailViewModel @Inject constructor(
      * Starts the foreground VideoExportService: it loads the track, resolves the limits
      * and runs the export, so a swipe from recents cannot kill the process mid-encode.
      */
-    fun createVideo(track: Track, keepSfx: Boolean) {
+    fun createVideo(track: Track, keepSfx: Boolean, targetTotalSec: Int? = null) {
         if (videoStateHolder.state.value is VideoExportState.Running) return
         val intent = Intent(context, VideoExportService::class.java)
             .putExtra(VideoExportService.EXTRA_TRACK_ID, track.id)
@@ -103,6 +103,8 @@ class TrackDetailViewModel @Inject constructor(
         _musicPath.value?.let { intent.putExtra(VideoExportService.EXTRA_BGM_PATH, it) }
         // Sprint 43: SFX toggle - when off the cues are muted, BGM stays.
         intent.putExtra(VideoExportService.EXTRA_KEEP_SFX, keepSfx)
+        // Sprint 49: explicit total clip length (30/60/120/180 s); null = auto.
+        targetTotalSec?.let { intent.putExtra(VideoExportService.EXTRA_TARGET_SEC, it) }
         ContextCompat.startForegroundService(context, intent)
     }
 

@@ -74,16 +74,30 @@ class FollowRectGeometryTest {
     }
 
     @Test
-    fun `follow segment count keeps centre spacing within half window`() {
+    fun `follow segment count keeps overlapped centres inside the memory cap`() {
         val routeLength = 20_000.0
         val windowWidth = 2_000.0
         val count = adaptiveFollowSegmentCount(routeLength, windowWidth)
-        assertEquals(21, count)
+        assertEquals(24, count) // ceil(20 km / 900 m) + 1: centres overlap by 10% of a window
         assertTrue(count <= MAX_FOLLOW_SEGMENTS)
-        assertTrue(routeLength / count <= windowWidth / 2.0)
+        assertTrue(routeLength / (count - 1) <= windowWidth * FOLLOW_WINDOW_STEP_RATIO)
 
         assertEquals(1, adaptiveFollowSegmentCount(0.0, windowWidth))
         assertTrue(adaptiveFollowSegmentCount(200_000.0, windowWidth) > MAX_FOLLOW_SEGMENTS)
+    }
+
+    @Test
+    fun `follow rect rejects frame edges and accepts a padded rect`() {
+        val full = floatArrayOf(0f, 0f, 700f, 400f)
+        assertTrue(MapSnapshotProvider.followRectCoversFrame(full, 350f, 200f, 1f, 640f, 360f))
+        val insufficient = floatArrayOf(20f, 10f, 630f, 350f)
+        assertTrue(!MapSnapshotProvider.followRectCoversFrame(
+            insufficient, 350f, 200f, 1f, 640f, 360f
+        ))
+        // A rect covering only the central half of the frame is too small at zoom 2.
+        assertTrue(!MapSnapshotProvider.followRectCoversFrame(
+            floatArrayOf(170f, 100f, 470f, 260f), 320f, 180f, 2f, 640f, 360f
+        ))
     }
 
     @Test
