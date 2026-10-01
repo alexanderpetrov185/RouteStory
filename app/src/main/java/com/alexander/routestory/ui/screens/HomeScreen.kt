@@ -57,15 +57,11 @@ fun HomeScreen(
     onStartTracking: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
     onOpenPro: () -> Unit = {},
-    onBuildRoute: () -> Unit = {},
-    onOpenSavedRoutes: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val isPro by viewModel.isPro.collectAsStateWithLifecycle()
     var dontAskAgain by remember { mutableStateOf(false) }
-    /** Sprint 62: the single "Routes" entry opens a small choice dialog. */
-    var routesDialog by remember { mutableStateOf(false) }
 
     // Ask about an interrupted ride as soon as the app opens.
     LaunchedEffect(Unit) { viewModel.checkDraft() }
@@ -187,40 +183,8 @@ fun HomeScreen(
                         label = stringResource(R.string.pro_title)
                     )
                 }
-                Button(
-                    onClick = { routesDialog = true },
-                    modifier = Modifier.fillMaxWidth(BUTTON_WIDTH_FRACTION).height(BUTTON_HEIGHT),
-                    colors = homeButtonColors(),
-                    contentPadding = PaddingValues(vertical = 14.dp)
-                ) {
-                    // Sprint 62: "Build route" and "Saved routes" became one "Routes" entry so the
-                    // home list stays short.
-                    HomeButtonContent(
-                        icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(20.dp), tint = BrandButtonContent) },
-                        label = stringResource(R.string.home_routes)
-                    )
-                }
             }
         }
-    }
-    if (routesDialog) {
-        AlertDialog(
-            onDismissRequest = { routesDialog = false },
-            title = { Text(stringResource(R.string.home_routes)) },
-            text = { Text(stringResource(R.string.home_routes_hint)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    routesDialog = false
-                    onBuildRoute()
-                }) { Text(stringResource(R.string.route_create)) }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    routesDialog = false
-                    onOpenSavedRoutes()
-                }) { Text(stringResource(R.string.route_open_saved)) }
-            }
-        )
     }
 }
 

@@ -346,37 +346,6 @@ fun TrackDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                // Sprint 65: turn a finished ride into a reusable planned route. The real
-                // track becomes the route geometry, so "Начать" from "Сохранённые" repeats
-                // the same road. Idempotent: the button reports "already saved" instead of
-                // creating a duplicate row.
-                val currentTrack = track
-                if (currentTrack != null && currentTrack.points.size >= 2) {
-                    val routeSaved = viewModel.routeSavedForRide
-                        .collectAsStateWithLifecycle().value != null
-                    OutlinedButton(
-                        onClick = {
-                            screenScope.launch {
-                                val result = viewModel.saveAsPlannedRoute(currentTrack)
-                                snackbarHostState.showSnackbar(
-                                    context.getString(
-                                        if (result) R.string.route_saved_from_ride
-                                        else R.string.route_saved_already
-                                    )
-                                )
-                            }
-                        },
-                        enabled = !routeSaved,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            stringResource(
-                                if (routeSaved) R.string.route_saved_from_ride_done
-                                else R.string.route_save_from_ride
-                            )
-                        )
-                    }
-                }
                 OutlinedButton(
                     onClick = { showDeleteDialog = true },
                     modifier = Modifier.fillMaxWidth()

@@ -11,11 +11,8 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.alexander.routestory.domain.TrackingState
 import com.alexander.routestory.service.TrackSaveOutcome
-import com.alexander.routestory.service.TrackingStateHolder
 import com.alexander.routestory.ui.screens.HistoryScreen
 import com.alexander.routestory.ui.screens.ProScreen
-import com.alexander.routestory.ui.screens.RouteBuilderScreen
-import com.alexander.routestory.ui.screens.SavedRoutesScreen
 import com.alexander.routestory.ui.screens.SplashScreen
 import com.alexander.routestory.ui.screens.HomeScreen
 import com.alexander.routestory.ui.screens.TrackDetailScreen
@@ -28,30 +25,13 @@ object Routes {
     const val TRACKING = "tracking"
     const val HISTORY = "history"
     const val PRO = "pro"
-    const val ROUTE_BUILDER = "route_builder"
-    const val SAVED_ROUTES = "saved_routes"
-    const val ARG_ROUTE_ID = "routeId"
     const val ARG_TRACK_ID = "trackId"
-    const val ARG_AUTO_START = "autoStart"
-
-    const val TRACKING_WITH_ROUTE = "tracking?routeId={$ARG_ROUTE_ID}"
-
-    /**
-     * Sprint 65: "Начать маршрут" from the builder. There is no routeId: the plan is an
-     * ephemeral [com.alexander.routestory.domain.PlannedRoute] (id 0) already sitting in
-     * the shared state holder, and autoStart makes the recording begin on arrival.
-     */
-    const val TRACKING_AUTO_START = "tracking?autoStart={$ARG_AUTO_START}"
 
     const val TRACK_DETAIL = "track/{$ARG_TRACK_ID}"
     const val TRACK_SUMMARY = "summary/{$ARG_TRACK_ID}"
 
     fun trackDetail(id: Long) = "track/$id"
     fun trackSummary(id: Long) = "summary/$id"
-    fun routeBuilder() = ROUTE_BUILDER
-    fun savedRoutes() = SAVED_ROUTES
-    fun trackingWithRoute(id: Long) = "tracking?routeId=$id"
-    fun trackingAutoStart() = "tracking?autoStart=true"
 }
 
 /**
@@ -71,13 +51,7 @@ fun RouteStoryNavHost(
     /** Ride the export notification wants to open (Sprint 47: no autoplay). */
     pendingTrackId: Long? = null,
     onPendingHandled: () -> Unit = {},
-    onPendingTrackHandled: () -> Unit = {},
-    /**
-     * Sprint 65: the builder hands its EPHEMERAL plan (id 0, never written to Room) to this
-     * holder so the tracking screen - and the recording service behind it - can draw the plan
-     * without a database row. Reusing the same holder as a saved route keeps one code path.
-     */
-    stateHolder: TrackingStateHolder? = null
+    onPendingTrackHandled: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
@@ -147,51 +121,12 @@ fun RouteStoryNavHost(
             HomeScreen(
                 onStartTracking = { navController.navigate(Routes.TRACKING) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
-                onOpenPro = { navController.navigate(Routes.PRO) },
-                onBuildRoute = { navController.navigate(Routes.routeBuilder()) },
-                onOpenSavedRoutes = { navController.navigate(Routes.savedRoutes()) }
+                onOpenPro = { navController.navigate(Routes.PRO) }
             )
-        }
-        composable(
-            Routes.TRACKING_WITH_ROUTE,
-            arguments = listOf(navArgument(Routes.ARG_ROUTE_ID) { type = NavType.LongType })
-        ) {
-            val id = navController.currentBackStackEntry?.arguments?.getLong(Routes.ARG_ROUTE_ID)
-            TrackingScreen(routeId = id)
-        }
-        composable(
-            Routes.TRACKING_AUTO_START,
-            arguments = listOf(
-                navArgument(Routes.ARG_AUTO_START) {
-                    type = NavType.BoolType; defaultValue = false
-                }
-            )
-        ) {
-            val auto = navController.currentBackStackEntry?.arguments
-                ?.getBoolean(Routes.ARG_AUTO_START) ?: false
-            TrackingScreen(autoStart = auto)
         }
         composable(Routes.TRACKING) {
             // Saving is handled by the nav host, so the screen stays a pure view of the ride.
             TrackingScreen()
-        }
-        composable(Routes.ROUTE_BUILDER) {
-            val holder = stateHolder
-            RouteBuilderScreen(
-                onBack = { navController.popBackStack() },
-                onStart = { plan ->
-                    // Sprint 65: the plan lives ONLY in the shared state for this session -
-                    // nothing is written to planned_routes, so it cannot appear in "Сохранённые".
-                    holder?.setPlannedRoute(plan)
-                    navController.navigate(Routes.trackingAutoStart()) { popUpTo(Routes.HOME) }
-                }
-            )
-        }
-        composable(Routes.SAVED_ROUTES) {
-            SavedRoutesScreen(
-                onBack = { navController.popBackStack() },
-                onStart = { id -> navController.navigate(Routes.trackingWithRoute(id)) }
-            )
         }
         composable(Routes.PRO) {
             ProScreen(onBack = { navController.popBackStack() })

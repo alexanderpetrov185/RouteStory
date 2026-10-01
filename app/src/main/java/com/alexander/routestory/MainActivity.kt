@@ -63,9 +63,7 @@ class MainActivity : ComponentActivity() {
                         pendingNavigation.clear()
                         stateHolder.consumeSaveOutcome()
                     },
-                    onPendingTrackHandled = { pendingTrackId.value = null },
-                    // Sprint 65: needed for the ephemeral plan of "Начать маршрут".
-                    stateHolder = stateHolder
+                    onPendingTrackHandled = { pendingTrackId.value = null }
                 )
             }
         }
