@@ -15,8 +15,8 @@ android {
         applicationId = "com.alexander.routestory"
         minSdk = 29
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.0.3"
+        versionCode = 9
+        versionName = "0.0.1"
 
 
         // Optional free CARTO basemap key (dark live tiles). Set CARTO_API_KEY=... in
