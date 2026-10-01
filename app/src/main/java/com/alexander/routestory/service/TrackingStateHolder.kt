@@ -26,6 +26,10 @@ class TrackingStateHolder @Inject constructor() {
 
     fun update(transform: (TrackingUiState) -> TrackingUiState) = _uiState.update(transform)
 
+    fun setPlannedRoute(route: com.alexander.routestory.domain.PlannedRoute?) {
+        _uiState.update { it.copy(activePlannedRouteId = route?.id, plannedRoute = route) }
+    }
+
     fun setDraftAvailable(available: Boolean) {
         _uiState.update { it.copy(draftAvailable = available) }
     }

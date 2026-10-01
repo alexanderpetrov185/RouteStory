@@ -141,10 +141,17 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private companion object {
         /** Brand line shown on the intro and outro cards. */
         const val APP_NAME = "RouteStory"
-        /** Light 3D: camera pitch, corner-fill zoom and perspective distance (px). */
+        /** Light 3D: camera pitch and perspective distance (px). */
         const val TILT_DEGREES = 30f
-        const val TILT_SCALE = 1.28f
         const val PERSPECTIVE_Z = 1800f
+        /**
+         * Sprint 63: extra overscan on top of the corner-derived cover scale. The
+         * tilted quad touches the frame border within a fraction of a pixel, and
+         * bilinear sampling at that border is what used to leak a dark line.
+         */
+        const val TILT_COVER_MARGIN = 0.03f
+        /** Sanity ceiling so an extreme pitch can never eat the whole composition. */
+        const val TILT_COVER_MAX = 1.9f
     }
 
     /**
@@ -162,8 +169,16 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private var tiltMatrix = android.graphics.Matrix()
 
     /**
-     * Perspective matrix for the map group: rotateX around the frame centre, then scale up a
-     * little so the trapezoid corners stay covered. Cheap: computed once per export.
+     * Perspective matrix for the map group: rotateX around the frame centre, then scale up just
+     * enough for the tilted quad to COVER the whole frame.
+     *
+     * Sprint 63: the old fixed tilt overscan of 1.28 was tuned for one aspect and left under 1 %
+     * of vertical overscan on a 16:9 720p frame, which is exactly the thin dark band reported
+     * at the top/bottom of some exports. The required overscan now comes from the matrix itself:
+     * the four frame corners are mapped through the inverse projection, and the largest corner
+     * deviation decides the scale, so the fill is guaranteed for any size/pitch combination.
+     * Cheap: computed once per (size, amount) pair.
+     *
      * [amount] 0..1 animates the tilt-in (TILT phase); marker still stands.
      */
     private fun tiltFor(w: Float, h: Float, amount: Float = 1f): android.graphics.Matrix {
@@ -180,10 +195,59 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             }
             m.preTranslate(-w / 2f, -h / 2f)
             m.postTranslate(w / 2f, h / 2f)
-            m.postScale(TILT_SCALE, TILT_SCALE, w / 2f, h / 2f)
+            val cover = tiltCoverScale(m, w, h)
+            m.postScale(cover, cover, w / 2f, h / 2f)
             tiltMatrix = m
         }
         return tiltMatrix
+    }
+
+    /**
+     * Smallest uniform scale (about the frame centre) after which the tilted plane covers
+     * the whole frame, plus [TILT_COVER_MARGIN]. Exact w.r.t. the real matrix: a frame
+     * corner [c] is covered when the inverse map lands inside the source rect, i.e. when
+     * `m.inverse()(centre + (c - centre) / k)` is inside the frame. That predicate is
+     * monotone in [k], so a short bisection finds the threshold; the frame has only four
+     * corners and the result is cached per (size, amount).
+     */
+    private fun tiltCoverScale(matrix: android.graphics.Matrix, w: Float, h: Float): Float {
+        val inverse = android.graphics.Matrix()
+        if (!matrix.invert(inverse)) return (1f + TILT_COVER_MARGIN).coerceAtMost(TILT_COVER_MAX)
+        val cx = w / 2f
+        val cy = h / 2f
+        // Output-space corners of the frame; each is pulled back towards the centre by 1/k.
+        val corners = floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h)
+
+        fun covered(k: Float): Boolean {
+            val pts = FloatArray(corners.size)
+            var i = 0
+            while (i < corners.size) {
+                pts[i] = cx + (corners[i] - cx) / k
+                pts[i + 1] = cy + (corners[i + 1] - cy) / k
+                i += 2
+            }
+            inverse.mapPoints(pts)
+            i = 0
+            while (i < pts.size) {
+                val x = pts[i]
+                val y = pts[i + 1]
+                // Outside the source rect (or a degenerate perspective hit) -> not covered.
+                if (!x.isFinite() || !y.isFinite() ||
+                    x < 0f || x > w || y < 0f || y > h
+                ) return false
+                i += 2
+            }
+            return true
+        }
+
+        if (covered(1f)) return 1f + TILT_COVER_MARGIN
+        var lo = 1f
+        var hi = TILT_COVER_MAX
+        repeat(14) {
+            val mid = (lo + hi) / 2f
+            if (covered(mid)) hi = mid else lo = mid
+        }
+        return min(hi * (1f + TILT_COVER_MARGIN), TILT_COVER_MAX)
     }
 
     /**
@@ -550,6 +614,12 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         val zoomOut = if (tl.isOutro(frame)) 1f else finishT
         val camTarget = overviewCrop?.let { MapSnapshotProvider.followCameraZoom(it) } ?: 6f
         val zoomRamp = (1f + (camTarget - 1f) * tl.zoomAmount(frame)) * (1f + 0.35f * boost)
+        // Sprint 66: the camera zoom is the plain timeline ramp again. Sprint 65 (B1)
+        // clamped it to 2.2 * bitmapWidth / frameWidth, which silently capped the close-up
+        // at ~4x instead of the followCameraZoom target (6..48) and killed both the opening
+        // zoom-in and the closing zoom-out. Backdrop sharpness is bought with snapshot
+        // resolution (oversample + MAX_TILES) and the follow segment, not by holding the
+        // camera back.
         val cameraZoom = zoomRamp * (1f - zoomOut) + zoomOut
         val (baseX, baseY) = baseProject(curLat, curLon)
         // Sprint 36: the camera centre is the marker position itself - recomputed
@@ -568,8 +638,13 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             return (x - centerX) * cameraZoom + w / 2 to (y - centerY) * cameraZoom + h / 2
         }
         // Sprint 40A: one background per frame. After follow reaches [FOLLOW_SWITCH],
-        // choose one prepared segment with the greatest camera coverage. No alpha
-        // cross-fade and no overview fallback while MOVE is active.
+        // choose one prepared segment with the greatest camera coverage.
+        // Sprint 63: the overview is no longer dropped during MOVE - it stays as the BASE
+        // layer under the sharp segment. A follow crop only covers its own window, so every
+        // pixel outside that window used to fall through to [bgPaint] and read as a black
+        // band at the top/bottom of the clip. Overview and segment share ONE coordinate
+        // space (see FollowRectGeometryTest), so overlaying them keeps the drawn route on
+        // the satellite imagery instead of lifting it off.
         data class FollowLayer(
             val index: Int,
             val rect: android.graphics.RectF,
@@ -593,32 +668,50 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             val coverage = (overlapW * overlapH) / requiredArea.coerceAtLeast(1f)
             return FollowLayer(index, rect, bitmap, coverage)
         }
+        // Sprint 66: the sharp layer is back to the MOVE phase only, gated by FOLLOW_SWITCH.
+        //
+        // Sprint 65 (B2) admitted it from 0.60 and dropped the !isFinish guard. Both were
+        // wrong: followCropInfo caps its zoom via
+        // camAtSwitch = 1 + FOLLOW_SWITCH * (camZoom - 1), i.e. the segment rect is sized
+        // to cover the camera window at 87% of the ramp, NOT at 60%. With the camera then
+        // also held back by the backdrop cap, the required window was 2-3x the rect, so
+        // maxByOrNull picked a segment that covered part of the frame and the rest stayed
+        // on the coarse overview - the "small HQ square floating over blurred map".
+        // On FINISH the same rule pulled the last segment along with the retreating
+        // camera, drawing the square during the zoom-out.
+        //
+        // Below FOLLOW_SWITCH (and through ZOOM and FINISH) the frame is ONE layer: the
+        // overview, cover-scaled, so no seam can appear.
         val isMove = follow >= FOLLOW_SWITCH && !tl.isFinish(frame)
         val candidates = if (isMove) followSegments.indices.mapNotNull(::layer) else emptyList()
         val sharpLayer = candidates.maxByOrNull { it.coverage }
-        val usedOverview = background != null && sharpLayer == null && !isMove
+        // Sprint 63: the overview is the base layer whenever tiles are available; the sharp
+        // segment only paints over it. No frame region can reach [bgPaint] anymore. When the
+        // overview snapshot is missing, the follow crop itself stretches over the frame as
+        // the base (the pre-Sprint-63 behaviour of the intro camera), which still beats a
+        // black band at the frame edge.
+        val overviewBase = background ?: closeUpBackground
         if (frame % 30 == 0 && isMove) {
             android.util.Log.d(
                 "VideoExport",
                 "follow segmentIndex=${sharpLayer?.index ?: -1} " +
                     "coversFrame=${sharpLayer != null && sharpLayer.coverage >= 0.999f} " +
-                    "coverage=${"%.3f".format(sharpLayer?.coverage ?: 0f)} usedOverview=false"
+                    "coverage=${"%.3f".format(sharpLayer?.coverage ?: 0f)} overviewBase=${background != null}"
             )
         }
-        if (usedOverview || sharpLayer != null) {
+        if (overviewBase != null || sharpLayer != null) {
             canvas.save()
             canvas.translate(w / 2, h / 2)
             canvas.scale(cameraZoom, cameraZoom)
             canvas.translate(-centerX, -centerY)
-            if (usedOverview) {
-                background?.let {
-                    canvas.drawBitmap(brightenOnce(it), null,
-                        android.graphics.RectF(0f, 0f, w, h), null)
-                }
-            } else {
-                sharpLayer?.let { layer ->
-                    canvas.drawBitmap(brightenOnce(layer.bitmap), null, layer.rect, null)
-                }
+            // 1) Full base: always stretches over the whole frame rect.
+            overviewBase?.let {
+                canvas.drawBitmap(brightenOnce(it), null,
+                    android.graphics.RectF(0f, 0f, w, h), null)
+            }
+            // 2) The sharp follow crop on top, inside the very same overview space.
+            sharpLayer?.let { layer ->
+                canvas.drawBitmap(brightenOnce(layer.bitmap), null, layer.rect, null)
             }
             canvas.restore()
         }

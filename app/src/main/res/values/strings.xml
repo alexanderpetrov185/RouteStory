@@ -40,6 +40,7 @@
     <string name="video_preparing">Подготовка видео…</string>
     <string name="action_save">Сохранить</string>
     <string name="action_share">Поделиться</string>
+    <string name="video_action_play">Воспроизвести</string>
     <string name="action_close">Закрыть</string>
     <string name="video_error">Ошибка генерации видео</string>
     <string name="video_notif_channel_name">Создание видео</string>
@@ -95,13 +96,36 @@
 
     <!-- Sprint 49: hint next to "Добавить фото" (non-blocking). -->
     <string name="photo_vertical_hint">Лучше снимать вертикально — так фото лучше в видео и на весь экран.</string>
-    <!-- Sprint 49: marker MOVE duration choice in CreateVideoDialog. -->
-    <string name="video_duration_title">Время движения по маршруту</string>
-    <string name="video_duration_auto">Пусть приложение решит</string>
-    <string name="video_duration_30">30 с</string>
-    <string name="video_duration_60">1 мин</string>
-    <string name="video_duration_120">2 мин</string>
-    <string name="video_duration_warning">Выбранное время — это движение маркера по карте. Интро, наклон и приближение камеры, финиш, фото и outro добавят сверху. Итоговый файл будет длиннее; дольше маркер движется медленнее, а создание видео занимает больше времени.</string>
-    <string name="video_duration_estimate">При выбранных %1$d с итоговый файл будет около %2$d с. Фотографии, интро, финиш и outro добавят примерно %3$d с.</string>
+    <!-- Sprint 63: the clip length is always computed by the app (distance + photos + budget). -->
+    <string name="video_duration_auto_hint">Длительность видео приложение подберёт само: дольше поездка — дольше идёт маркер по карте.</string>
+    <string name="action_build_route">Построить маршрут</string>
+    <string name="route_builder_title">Построить маршрут</string>
+    <string name="route_saved_routes">Сохранённые маршруты</string>
+    <string name="route_save">Сохранить маршрут</string>
+    <string name="route_start">Начать маршрут</string>
+    <string name="route_retry">Повторить</string>
+    <string name="route_default_name">Маршрут</string>
+    <string name="route_no_saved">Нет сохранённых маршрутов</string>
+    <string name="route_exit_without_saving">Выйти без сохранения</string>
+    <string name="route_exit_title">Выйти без сохранения?</string>
+    <string name="route_exit_text">Несохранённые точки будут потеряны.</string>
+    <string name="route_undo_point">Назад</string>
+    <string name="route_clear_points">Очистить</string>
+    <string name="route_distance">Дистанция: %1$s</string>
+    <string name="route_points_count">Точек: %1$d / %2$d</string>
+    <string name="route_longpress_hint">Удерживайте палец на карте, чтобы добавить точку</string>
+    <string name="route_delete_point_title">Удалить точку?</string>
+    <string name="route_delete_point_text">Точка %1$d будет убрана из маршрута</string>
+    <string name="route_routing_failed">Не удалось построить маршрут по дорогам</string>
+    <string name="route_max_points">Можно добавить не более 10 точек</string>
+    <string name="route_location_needed">Разрешите доступ к геолокации, чтобы видеть своё местоположение на карте</string>
+    <string name="home_routes">Маршруты</string>
+    <string name="home_routes_hint">Создайте новый маршрут или откройте один из сохранённых.</string>
+    <string name="route_create">Создать</string>
+    <string name="route_open_saved">Сохранённые</string>
+    <string name="route_save_from_ride">Сохранить как маршрут</string>
+    <string name="route_saved_from_ride">Маршрут сохранён в «Сохранённые»</string>
+    <string name="route_saved_from_ride_done">Маршрут уже сохранён</string>
+    <string name="route_saved_already">Эта поездка уже сохранена как маршрут</string>
 </resources>
 

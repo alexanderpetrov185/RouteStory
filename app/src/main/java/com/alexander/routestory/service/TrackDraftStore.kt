@@ -21,6 +21,7 @@ data class TrackDraft(
     val status: TrackingState,
     val points: List<TrackPoint>,
     val photos: List<TrackPhoto>,
+    val activePlannedRouteId: Long? = null,
     val savedAtMs: Long = System.currentTimeMillis()
 )
 
@@ -50,6 +51,7 @@ class TrackDraftStore @Inject constructor(
             root.put("accumulatedMs", draft.accumulatedMs)
             root.put("totalDistanceM", draft.totalDistanceM.toDouble())
             root.put("status", draft.status.name)
+            if (draft.activePlannedRouteId != null) root.put("activePlannedRouteId", draft.activePlannedRouteId)
             root.put("savedAtMs", draft.savedAtMs)
             val pts = JSONArray()
             for (p in draft.points) {
@@ -121,7 +123,9 @@ class TrackDraftStore @Inject constructor(
                 totalDistanceM = root.optDouble("totalDistanceM", 0.0).toFloat(),
                 status = runCatching { TrackingState.valueOf(root.optString("status", "PAUSED")) }
                     .getOrDefault(TrackingState.PAUSED),
-                points = points, photos = photos, savedAtMs = savedAt
+                points = points, photos = photos,
+                activePlannedRouteId = if (root.isNull("activePlannedRouteId")) null else root.optLong("activePlannedRouteId"),
+                savedAtMs = savedAt
             )
         }.getOrNull()
     }

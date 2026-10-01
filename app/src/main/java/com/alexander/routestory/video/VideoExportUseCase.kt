@@ -95,6 +95,15 @@ class VideoExportUseCase @Inject constructor(
                 "follow prefetch ready=${followReport.readyTiles}/${followReport.expectedTiles} " +
                     "segments=${followReport.crops.size} missing=${followReport.missingTiles.size}"
             )
+            // Sprint 65 (B2): the opening zoom-in uses the FIRST segment and the closing
+            // zoom-out the LAST one, so both must exist and be sharp - a short ride may fit
+            // in a single window, which is logged here because it is the common case.
+            Log.i(
+                "VideoExport",
+                "follow end segments startZ=${followReport.crops.firstOrNull()?.info?.zoom} " +
+                    "endZ=${followReport.crops.lastOrNull()?.info?.zoom} " +
+                    "overviewZ=${MapSnapshotProvider.cropInfo(track, limits.width, limits.height)?.zoom}"
+            )
             if (!followReport.isComplete) {
                 throw IllegalStateException(
                     "follow tiles incomplete: ${followReport.readyTiles}/${followReport.expectedTiles}"

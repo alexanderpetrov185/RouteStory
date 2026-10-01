@@ -46,6 +46,10 @@ internal const val MAX_FOLLOW_SEGMENTS = 48
  * Sprint 41 follow detail: the follow zoom is derived from a geo WINDOW around the
  * marker (~[FOLLOW_WINDOW_M] across the screen during MOVE), not from the whole-track
  * overview bbox - long rides no longer "zoom out".
+ *
+ * Note: the effective follow zoom is computed by [followCropInfo] from the marker window
+ * and the camera ramp; this helper is only the coarse fallback for callers that just need
+ * "a bit closer than the overview".
  */
 internal fun followTileZoom(overviewZoom: Int): Int =
     (overviewZoom + 1).coerceIn(0, MAX_FOLLOW_ZOOM)
@@ -103,7 +107,16 @@ class MapSnapshotProvider @Inject constructor(
         // z / y / x (not z/x/y)!
         private const val TILE_URL =
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/%d/%d/%d"
-        const val MAX_TILES = 9
+        /**
+         * Sprint 65 (B1): the overview grid budget.
+         *
+         * Was 9 (3x3). That capped [pickZoom] one level below what the frame could show,
+         * so the base layer was upscaled and the frame edges outside any follow segment
+         * looked like magnified mush. 16 (4x4) buys roughly one more zoom level of real
+         * Esri detail for 16 * 256 * 256 * 2 B = 2 MiB of RGB_565 - cheap, and it is the
+         * layer that is visible on EVERY frame, including the intro and the outro.
+         */
+        const val MAX_TILES = 16
         const val TILE_PX = 256
         const val MAX_ZOOM = 16
         /** Minimum video window around the track (~1 km): keeps the crop sharp. */
@@ -438,6 +451,12 @@ class MapSnapshotProvider @Inject constructor(
         if (count > MAX_FOLLOW_SEGMENTS) {
             throw IllegalStateException("follow needs $count segments, limit=$MAX_FOLLOW_SEGMENTS")
         }
+        // The list runs over the WHOLE progress range, so the first and the last windows
+        // are prepared exactly like every middle one. Sprint 66 kept this (it is only the
+        // crop LIST; the renderer decides who may be drawn), but the sharp layer is again
+        // gated by FOLLOW_SWITCH and excluded on FINISH (see RouteFrameRenderer). Windows
+        // overlap by FOLLOW_WINDOW_STEP_RATIO, so handing over to the next one mid-move
+        // never opens a gap.
         return (0 until count).map { k ->
             val start = k.toFloat() / count
             val end = (k + 1).toFloat() / count

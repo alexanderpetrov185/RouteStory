@@ -6,13 +6,22 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [TrackEntity::class, TrackPointEntity::class, TrackPhotoEntity::class],
-    version = 2,
+    entities = [TrackEntity::class, TrackPointEntity::class, TrackPhotoEntity::class, PlannedRouteEntity::class, PlannedRoutePointEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class RouteStoryDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
     abstract fun trackPhotoDao(): TrackPhotoDao
+    abstract fun plannedRouteDao(): PlannedRouteDao
+}
+
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS planned_routes (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, profile TEXT NOT NULL, distanceMeters REAL NOT NULL, createdAt INTEGER NOT NULL, geometry TEXT NOT NULL)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS planned_route_points (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, routeId INTEGER NOT NULL, orderIndex INTEGER NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, FOREIGN KEY(routeId) REFERENCES planned_routes(id) ON DELETE CASCADE)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_planned_route_points_routeId ON planned_route_points(routeId)")
+    }
 }
 
 /** Adds the track_photos table without losing existing data. */

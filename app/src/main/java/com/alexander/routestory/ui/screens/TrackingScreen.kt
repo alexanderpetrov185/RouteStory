@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -57,6 +58,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.alexander.routestory.R
 import com.alexander.routestory.domain.TrackingState
+import com.alexander.routestory.domain.TrackPoint
 import com.alexander.routestory.service.TrackSaveOutcome
 import com.alexander.routestory.utils.GeoUtils
 import kotlinx.coroutines.Dispatchers
@@ -65,9 +67,18 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackingScreen(
+    routeId: Long? = null,
+    /**
+     * Sprint 65: true when the user pressed "Начать маршрут" in the builder. The plan is
+     * already in the shared state holder, so this screen only has to start the recording
+     * - no second "Начать запись" tap. The start happens exactly once, and only after
+     * location permission AND the GPS switch are both in place.
+     */
+    autoStart: Boolean = false,
     viewModel: TrackingViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    LaunchedEffect(routeId) { routeId?.let(viewModel::loadPlannedRoute) }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -192,6 +203,36 @@ fun TrackingScreen(
         else viewModel.requestInitialFix()
     }
 
+    // Sprint 65: "Начать маршрут" starts the recording as soon as it legally can.
+    // The consumed flag makes it a ONE-SHOT: a recomposition, a rotation or the user
+    // coming back from the permission/GPS dialog can never fire a second ACTION_START.
+    var autoStartConsumed by rememberSaveable { mutableStateOf(false) }
+    // state.lastFix is part of the key set: the first fix arriving is what unblocks the start.
+    LaunchedEffect(autoStart, hasPermissions, gpsEnabled, state.state, state.lastFix) {
+        if (!autoStart || autoStartConsumed) return@LaunchedEffect
+        if (state.state != TrackingState.IDLE) {
+            // A ride is already running (e.g. a draft was adopted) - nothing to start.
+            autoStartConsumed = true
+            return@LaunchedEffect
+        }
+        if (!hasPermissions) {
+            // The launcher above is already running / will run; its result re-enters here.
+            return@LaunchedEffect
+        }
+        if (!gpsEnabled) {
+            // Show the "GPS is off" card with its enable button; startEnableGps() below
+            // flips gpsEnabled and this effect runs again.
+            return@LaunchedEffect
+        }
+        // A recording without a fix would store an empty ride, so wait for the first fix.
+        if (state.lastFix == null) {
+            viewModel.requestInitialFix(force = true)
+            return@LaunchedEffect
+        }
+        autoStartConsumed = true
+        viewModel.start()
+    }
+
     // Permissions and the GPS switch can change while the app is in the background.
     DisposableEffect(lifecycleOwner, permissions) {
         val observer = LifecycleEventObserver { _, event ->
@@ -244,6 +285,9 @@ fun TrackingScreen(
             }
             RouteMapPlaceholder(
                 points = state.points,
+                plannedPoints = state.plannedRoute?.geometry?.mapIndexed { i, p ->
+                    TrackPoint(p.latitude, p.longitude, 0.0, 0f, 0f, i.toLong())
+                }.orEmpty(),
                 photoPositions = photoPositionsOf(state.points, state.photos),
                 modifier = Modifier
                     .fillMaxWidth()

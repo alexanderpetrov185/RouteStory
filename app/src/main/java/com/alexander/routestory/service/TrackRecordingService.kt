@@ -47,6 +47,7 @@ class TrackRecordingService : LifecycleService() {
 
     @Inject lateinit var stateHolder: TrackingStateHolder
     @Inject lateinit var repository: TrackRepository
+    @Inject lateinit var plannedRouteRepository: com.alexander.routestory.data.PlannedRouteRepository
     @Inject lateinit var draftStore: TrackDraftStore
     @Inject lateinit var pendingNavigation: PendingNavigationStore
     @Inject lateinit var proRepository: ProRepository
@@ -259,7 +260,8 @@ class TrackRecordingService : LifecycleService() {
             st.state,
             livePoints.toList(),
             st.photos.toList(),
-            now
+            activePlannedRouteId = st.activePlannedRouteId,
+            savedAtMs = now
         )
     }
 
@@ -325,6 +327,19 @@ class TrackRecordingService : LifecycleService() {
             stateHolder.update { it.copy(photos = draft.photos) }
         }
         android.util.Log.i("TrackService", "draft adopted: points=${points.size} start=$startTime")
+        restorePlannedRoute(draft.activePlannedRouteId)
+    }
+
+    /** Sprint 61: a killed session keeps its blue plan via the draft route id. */
+    private fun restorePlannedRoute(routeId: Long?) {
+        if (routeId == null) return
+        if (stateHolder.uiState.value.activePlannedRouteId == routeId &&
+            stateHolder.uiState.value.plannedRoute != null
+        ) return
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { plannedRouteRepository.getById(routeId) }.getOrNull()
+                ?.let { stateHolder.setPlannedRoute(it) }
+        }
     }
 
     private fun startRecording() {

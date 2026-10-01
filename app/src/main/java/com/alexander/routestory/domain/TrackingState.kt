@@ -17,6 +17,8 @@ data class TrackingUiState(
     val speedMps: Float = 0f,
     /** Latest raw GPS fix, even if the point was filtered out of the recorded track. */
     val lastFix: Pair<Double, Double>? = null,
+    val activePlannedRouteId: Long? = null,
+    val plannedRoute: com.alexander.routestory.domain.PlannedRoute? = null,
     /** A killed session left a recoverable draft on disk. */
     val draftAvailable: Boolean = false
 )

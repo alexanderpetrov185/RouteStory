@@ -25,13 +25,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -44,10 +43,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.Surface
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -57,6 +54,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.onSizeChanged
@@ -73,12 +71,12 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -348,6 +346,37 @@ fun TrackDetailScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // Sprint 65: turn a finished ride into a reusable planned route. The real
+                // track becomes the route geometry, so "Начать" from "Сохранённые" repeats
+                // the same road. Idempotent: the button reports "already saved" instead of
+                // creating a duplicate row.
+                val currentTrack = track
+                if (currentTrack != null && currentTrack.points.size >= 2) {
+                    val routeSaved = viewModel.routeSavedForRide
+                        .collectAsStateWithLifecycle().value != null
+                    OutlinedButton(
+                        onClick = {
+                            screenScope.launch {
+                                val result = viewModel.saveAsPlannedRoute(currentTrack)
+                                snackbarHostState.showSnackbar(
+                                    context.getString(
+                                        if (result) R.string.route_saved_from_ride
+                                        else R.string.route_saved_already
+                                    )
+                                )
+                            }
+                        },
+                        enabled = !routeSaved,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            stringResource(
+                                if (routeSaved) R.string.route_saved_from_ride_done
+                                else R.string.route_save_from_ride
+                            )
+                        )
+                    }
+                }
                 OutlinedButton(
                     onClick = { showDeleteDialog = true },
                     modifier = Modifier.fillMaxWidth()
@@ -467,8 +496,6 @@ fun TrackDetailScreen(
     }
     if (showCreateVideoDialog) {
         var sfxEnabled by remember { mutableStateOf(keepSfx) }
-        // Sprint 49: explicit marker MOVE time; null = "let the app decide" (auto).
-        var targetMapSec by remember { mutableStateOf<Int?>(null) }
         AlertDialog(
             onDismissRequest = { showCreateVideoDialog = false },
             title = { Text(stringResource(R.string.action_create_video)) },
@@ -486,58 +513,18 @@ fun TrackDetailScreen(
                         androidx.compose.material3.Checkbox(sfxEnabled, onCheckedChange = { sfxEnabled = it })
                         Text(stringResource(R.string.video_sfx_toggle_full), Modifier.weight(1f))
                     }
+                    // Sprint 63: no duration picker. The clip length is always what the app
+                    // computes itself from the ride distance, photos and the encode budget.
                     Text(
-                        text = stringResource(R.string.video_duration_title),
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    val durationOptions = listOf(
-                        stringResource(R.string.video_duration_auto) to null,
-                        stringResource(R.string.video_duration_30) to 30,
-                        stringResource(R.string.video_duration_60) to 60,
-                        stringResource(R.string.video_duration_120) to 120
-                    )
-                    durationOptions.forEach { (label, seconds) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { targetMapSec = seconds },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = targetMapSec == seconds,
-                                onClick = { targetMapSec = seconds }
-                            )
-                            Text(label)
-                        }
-                    }
-                    Text(
-                        text = stringResource(R.string.video_duration_warning),
+                        text = stringResource(R.string.video_duration_auto_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    targetMapSec?.let { mapSec ->
-                        val photoCount = minOf(track?.photos?.size ?: 0, if (isPro) 12 else 10)
-                        val hold = if (photoCount == 0) 0f else
-                            (maxOf(60f, (mapSec + 4) * 0.5f) / photoCount).coerceIn(1f, 5f)
-                        val extra = 15 + (hold * photoCount).toInt()
-                        Text(
-                            text = stringResource(
-                                R.string.video_duration_estimate,
-                                mapSec,
-                                mapSec + extra,
-                                extra
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    track?.let {
-                        viewModel.createVideo(it, sfxEnabled, targetMapSec)
-                    }
+                    track?.let { viewModel.createVideo(it, sfxEnabled) }
                     showCreateVideoDialog = false
                 }) { Text(stringResource(R.string.action_start_video)) }
             },
@@ -647,61 +634,49 @@ private fun VideoBlock(
     // The fresh export wins while its state is present; afterwards the archive.
     val file = doneFile?.takeIf { it.isFile && it.length() > 0L } ?: archived
     if (preparing == null && running == null && file == null) return
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = MaterialTheme.shapes.medium,
-        modifier = modifier
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            if (preparing != null) {
-                Text(stringResource(R.string.video_preparing), style = MaterialTheme.typography.titleSmall)
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-            val r = running
-            if (r != null) {
-                Text(
-                    text = stringResource(R.string.video_generating),
-                    style = MaterialTheme.typography.titleSmall
-                )
-                LinearProgressIndicator(
-                    progress = { r.progress },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(text = (r.progress * 100).toInt().toString() + " %")
-                    Spacer(modifier = Modifier.weight(1f))
-                    TextButton(onClick = { viewModel.cancelVideo() }) {
-                        Text(stringResource(R.string.action_cancel))
-                    }
+    // Sprint 64: no card behind the clip anymore. The player keeps the screen
+    // background and is sized to the whole screen width (the detail column adds a
+    // 16.dp inset, so the clip is centred and bleeds past it to both edges).
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        if (preparing == null && running == null && file != null) {
+            val freshAutoPlay = exportStartedHere && doneFile != null && file.absolutePath != autoplayConsumed
+            InlineVideoPlayer(
+                file = file,
+                modifier = Modifier.width(screenWidthDp.dp),
+                autoPlay = freshAutoPlay,
+                onAutoplayConsumed = { autoplayConsumed = file.absolutePath },
+                onShare = { shareVideo(file, context) },
+                onSave = { onSave(file) }
+            )
+        } else {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (preparing != null) {
+                    Text(stringResource(R.string.video_preparing), style = MaterialTheme.typography.titleSmall)
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-            }
-            if (preparing == null && running == null && file != null) {
-                val freshAutoPlay = exportStartedHere && doneFile != null && file.absolutePath != autoplayConsumed
-                InlineVideoPlayer(
-                    file = file,
-                    modifier = Modifier.fillMaxWidth(),
-                    autoPlay = freshAutoPlay,
-                    onAutoplayConsumed = { autoplayConsumed = file.absolutePath }
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    TextButton(onClick = {
-                        shareVideo(file, context)
-                    }) {
-                        Text(stringResource(R.string.action_share))
-                    }
-                    TextButton(onClick = {
-                        onSave(file)
-                    }) {
-                        Text(stringResource(R.string.action_save))
+                val r = running
+                if (r != null) {
+                    Text(
+                        text = stringResource(R.string.video_generating),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    LinearProgressIndicator(
+                        progress = { r.progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(text = (r.progress * 100).toInt().toString() + " %")
+                        Spacer(modifier = Modifier.weight(1f))
+                        TextButton(onClick = { viewModel.cancelVideo() }) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
                     }
                 }
             }
@@ -714,21 +689,19 @@ private fun InlineVideoPlayer(
     file: File,
     modifier: Modifier = Modifier,
     autoPlay: Boolean,
-    onAutoplayConsumed: () -> Unit
+    onAutoplayConsumed: () -> Unit,
+    onShare: () -> Unit,
+    onSave: () -> Unit
 ) {
-    // Sprint 42: seek slider + fullscreen dialog, no new libraries (plain VideoView).
-    // Sprint 43: compact timeline + icon transport controls (play/pause/stop/fullscreen).
+    // Sprint 64: plain VideoView with one compact media bar laid over the BOTTOM of
+    // the frame: play/pause on the left, the wide seek line in the middle, share and
+    // save on the right. No stop button, no fullscreen dialog (Sprint 64 removed both).
     var videoView by remember(file) { mutableStateOf<VideoView?>(null) }
     var durationMs by remember(file) { mutableStateOf(0) }
     var positionMs by remember(file) { mutableStateOf(0) }
     var dragging by remember(file) { mutableStateOf(false) }
-    var fullscreenAt by remember(file) { mutableStateOf<Int?>(null) }
     var failed by remember(file) { mutableStateOf(false) }
     var isPlaying by remember(file) { mutableStateOf(false) }
-    // Fullscreen handoff: inline pauses/releases first, and these two remember where
-    // the single remaining player stopped so the inline view can resume exactly there.
-    var resumePos by remember(file) { mutableStateOf(0) }
-    var resumePlay by remember(file) { mutableStateOf(false) }
 
     LaunchedEffect(videoView) {
         while (true) {
@@ -746,26 +719,18 @@ private fun InlineVideoPlayer(
     }
 
     if (!failed) {
-        Box(modifier = modifier.fillMaxWidth().height(220.dp)) {
-            // Unmounted while the fullscreen dialog is open (onRelease -> stopPlayback),
-            // so inline and fullscreen can never play at the same time.
-            if (fullscreenAt == null) AndroidView(
+        Box(modifier = modifier.height(220.dp)) {
+            AndroidView(
                 factory = { ctx ->
                     VideoView(ctx).apply {
                         setOnPreparedListener { mp ->
                             mp.isLooping = false
                             setOnCompletionListener { positionMs = durationMs; isPlaying = false }
                             durationMs = mp.duration
-                            // Coming back from fullscreen: continue at the saved position
-                            // and start only when it was playing there.
-                            val resume = resumePos
-                            if (resume > 0) { seekTo(resume); positionMs = resume }
-                            resumePos = 0
-                            if (autoPlay || resumePlay) {
+                            if (autoPlay) {
                                 start(); isPlaying = true
-                                if (autoPlay) { positionMs = 0; onAutoplayConsumed() }
+                                positionMs = 0; onAutoplayConsumed()
                             }
-                            resumePlay = false
                         }
                         setOnErrorListener { _, what, extra ->
                             android.util.Log.w("MapSnapshot", "inline video error what=$what extra=$extra")
@@ -794,102 +759,9 @@ private fun InlineVideoPlayer(
                         if (v.isPlaying) { v.pause(); isPlaying = false } else { v.start(); isPlaying = true }
                     }
                 },
-                onStop = { videoView?.let { it.pause(); it.seekTo(0) }; positionMs = 0; isPlaying = false },
-                onFullscreen = {
-                    // Single audio source: pause + release the inline view first; the
-                    // fullscreen player takes over from this exact position.
-                    resumePos = videoView?.currentPosition ?: positionMs
-                    resumePlay = isPlaying
-                    videoView?.pause()
-                    isPlaying = false
-                    fullscreenAt = resumePos
-                },
+                onShare = onShare,
+                onSave = onSave,
                 modifier = Modifier.align(Alignment.BottomCenter)
-            )
-        }
-    }
-    val at = fullscreenAt
-    if (at != null) {
-        // resumePos/resumePlay follow the fullscreen player (onState), so any close
-        // path leaves the inline view right where the user stopped it.
-        val closeFullscreen = { fullscreenAt = null }
-        androidx.compose.ui.window.Dialog(onDismissRequest = closeFullscreen) {
-            FullscreenPlayer(
-                file = file,
-                startAt = at,
-                onState = { pos, playing -> resumePos = pos; resumePlay = playing },
-                onClose = closeFullscreen
-            )
-        }
-    }
-}
-
-@Composable
-private fun FullscreenPlayer(
-    file: File,
-    startAt: Int,
-    onState: (positionMs: Int, playing: Boolean) -> Unit,
-    onClose: () -> Unit
-) {
-    // Sprint 42: same VideoView/seek pattern sized to the dialog.
-    // Sprint 43: icon transport controls + compact timeline; the "Закрыть" label is
-    // replaced by a Close icon in the top-right corner.
-    var fsView by remember(file) { mutableStateOf<VideoView?>(null) }
-    var fsDuration by remember(file) { mutableStateOf(0) }
-    var fsPosition by remember(file, startAt) { mutableStateOf(startAt) }
-    var fsDragging by remember(file) { mutableStateOf(false) }
-    var fsPlaying by remember(file) { mutableStateOf(false) }
-
-    LaunchedEffect(fsView) {
-        while (true) {
-            kotlinx.coroutines.delay(500)
-            val v = fsView ?: break
-            if (!fsDragging) {
-                fsPosition = v.currentPosition
-                if (v.duration > 0) fsDuration = v.duration
-                fsPlaying = v.isPlaying
-                onState(fsPosition, fsPlaying)
-            }
-        }
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).padding(12.dp)) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            AndroidView(
-                factory = { ctx ->
-                    VideoView(ctx).apply {
-                        setOnPreparedListener { mp ->
-                            mp.isLooping = false
-                            fsDuration = mp.duration
-                            seekTo(startAt)
-                            start()
-                            fsPlaying = true
-                            onState(startAt, true)
-                        }
-                        setOnCompletionListener {
-                            fsPosition = duration
-                            fsPlaying = false
-                        }
-                        setOnErrorListener { _, _, _ -> true }
-                        setVideoURI(android.net.Uri.fromFile(file))
-                        setOnClickListener {
-                            if (isPlaying) { pause(); fsPlaying = false }
-                            else { start(); fsPlaying = true }
-                        }
-                        fsView = this
-                    }
-                },
-                onRelease = { it.stopPlayback() },
-                modifier = Modifier.fillMaxWidth().weight(1f)
-            )
-            // Fullscreen controls remain visible; the old slider is intentionally removed.
-            VideoControls(
-                fsPosition, fsDuration, fsPlaying,
-                onSeek = { fsDragging = true; fsPosition = it },
-                onSeekFinished = { fsView?.seekTo(fsPosition); fsDragging = false },
-                onPlayPause = { fsView?.let { if (fsPlaying) { it.pause(); fsPlaying = false } else { it.start(); fsPlaying = true } } },
-                onStop = { fsView?.let { it.pause(); it.seekTo(0) }; fsPosition = 0; fsPlaying = false },
-                onFullscreen = onClose
             )
         }
     }
@@ -899,29 +771,75 @@ private fun FullscreenPlayer(
 private fun VideoControls(
     positionMs: Int, durationMs: Int, isPlaying: Boolean,
     onSeek: (Int) -> Unit, onSeekFinished: () -> Unit,
-    onPlayPause: () -> Unit, onStop: () -> Unit, onFullscreen: () -> Unit,
+    onPlayPause: () -> Unit, onShare: () -> Unit, onSave: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Sprint 64: one compact media bar drawn ON the bottom of the video frame.
+    // Play/pause on the left, the wide seek line in the middle (weight 1f), share
+    // and save on the right. A light scrim keeps the white controls readable on
+    // any frame of the clip.
     var width by remember { mutableStateOf(1) }
-    Box(modifier.fillMaxWidth().height(48.dp).onSizeChanged { width = it.width.coerceAtLeast(1) }) {
-        Canvas(Modifier.fillMaxWidth().height(18.dp).align(Alignment.BottomCenter).padding(horizontal = 8.dp)
-            .pointerInput(durationMs, width) {
-                detectHorizontalDragGestures(
-                    onDragStart = { onSeek((it.x / width * durationMs).toInt()) },
-                    onHorizontalDrag = { change, _ -> onSeek((change.position.x / width * durationMs).toInt()) },
-                    onDragEnd = { onSeekFinished() }
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f))
                 )
-            }) {
-            val y = size.height / 2f
-            val p = (positionMs.toFloat() / durationMs.coerceAtLeast(1)).coerceIn(0f, 1f)
-            drawLine(Color.White.copy(alpha = .55f), Offset(0f, y), Offset(size.width, y), strokeWidth = 2f)
-            drawLine(Color.White, Offset(0f, y), Offset(size.width * p, y), strokeWidth = 2f)
-            drawCircle(Color.White, 3.5f, Offset(size.width * p, y))
+            )
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onPlayPause) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                contentDescription = stringResource(
+                    if (isPlaying) R.string.action_pause else R.string.video_action_play
+                ),
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
         }
-        Row(Modifier.fillMaxWidth().align(Alignment.Center), horizontalArrangement = Arrangement.SpaceEvenly) {
-            IconButton(onClick = onPlayPause) { Icon(if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, modifier = Modifier.size(20.dp)) }
-            IconButton(onClick = onStop) { Icon(Icons.Filled.Stop, null, modifier = Modifier.size(20.dp)) }
-            IconButton(onClick = onFullscreen) { Icon(Icons.Filled.FitScreen, null, modifier = Modifier.size(20.dp)) }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(24.dp)
+                .onSizeChanged { width = it.width.coerceAtLeast(1) }
+        ) {
+            Canvas(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(durationMs, width) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { onSeek((it.x / width * durationMs).toInt()) },
+                            onHorizontalDrag = { change, _ -> onSeek((change.position.x / width * durationMs).toInt()) },
+                            onDragEnd = { onSeekFinished() }
+                        )
+                    }
+            ) {
+                val y = size.height / 2f
+                val p = (positionMs.toFloat() / durationMs.coerceAtLeast(1)).coerceIn(0f, 1f)
+                drawLine(Color.White.copy(alpha = .45f), Offset(0f, y), Offset(size.width, y), strokeWidth = 2.5f)
+                drawLine(Color.White, Offset(0f, y), Offset(size.width * p, y), strokeWidth = 2.5f)
+                drawCircle(Color.White, 4.5f, Offset(size.width * p, y))
+            }
+        }
+        IconButton(onClick = onShare) {
+            Icon(
+                imageVector = Icons.Filled.Share,
+                contentDescription = stringResource(R.string.action_share),
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        IconButton(onClick = onSave) {
+            Icon(
+                imageVector = Icons.Filled.Save,
+                contentDescription = stringResource(R.string.action_save),
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }

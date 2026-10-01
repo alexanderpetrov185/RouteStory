@@ -13,6 +13,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -42,6 +44,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
@@ -51,6 +54,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -69,6 +73,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -103,6 +108,52 @@ private const val PHOTO_GLYPH_PX = 48f
 private const val PHOTO_GLYPH_TARGET_PX = 24f
 private const val BOUNDS_PADDING_PX = 64
 private const val STYLE_TIMEOUT_MS = 8_000L
+/**
+ * Sprint 65: the builder hold is a single comfortable press, not a 2 s wait.
+ * 900 ms is inside the 800-1200 ms "feels instant" band; the progress ring
+ * ([RouteMapCanvas] hold feedback) and the hint text stay as they are.
+ * Cancelled by a drag past the slop, a second finger, or a lift - unchanged.
+ */
+private const val LONG_PRESS_HOLD_MS = 900L
+/** Sprint 62: a slop of 14 dp swallowed real presses; 10 dp still survives a shaky finger. */
+private const val LONG_PRESS_TOUCH_SLOP_DP = 10f
+/**
+ * Sprint 65: builder waypoint hit radius. A press is "on a marker" (delete / drag)
+ * well before it reaches the slop, so a marker tap is never swallowed by the
+ * long-press-add path. Bigger than the drawn 14 px circle, smaller than the slop.
+ */
+private const val WAYPOINT_HIT_DP = 26f
+
+/**
+ * Sprint 62: immutable camera snapshot used by the pointer handlers.
+ *
+ * `pointerInput(Unit)` keeps the code of the very first composition, so converting screen
+ * coordinates with the plain viewX/viewY/zoom vals returned the position computed for the camera
+ * of that first frame - after a zoom or a pan a long-press produced coordinates far away from the
+ * finger. Handlers read the snapshot through [rememberUpdatedState] instead, and can also write
+ * the snapshot back into the camera state to freeze the viewport.
+ */
+private data class CanvasCamera(
+    val viewX: Double,
+    val viewY: Double,
+    val zoom: Float,
+    val worldPixels: Double
+) {
+    fun project(lat: Double, lon: Double, width: Float, height: Float): Offset = Offset(
+        (width / 2.0 + ((lon + 180.0) / 360.0 - viewX) * worldPixels).toFloat(),
+        (height / 2.0 + (OsmTileLayer.mercYTiles(lat) - viewY) * worldPixels).toFloat()
+    )
+
+    fun toLatLon(x: Float, y: Float, width: Float, height: Float): Pair<Double, Double> {
+        val lon = viewX * 360.0 - 180.0 + (x - width / 2f) / worldPixels
+        val lat = Math.toDegrees(
+            kotlin.math.atan(
+                kotlin.math.sinh(Math.PI * (1.0 - 2.0 * (viewY + (y - height / 2f) / worldPixels)))
+            )
+        )
+        return lat to lon
+    }
+}
 
 /**
  * Route preview on top of MapLibre + OpenFreeMap tiles.
@@ -114,13 +165,35 @@ private const val STYLE_TIMEOUT_MS = 8_000L
 @Composable
 fun RouteMapPlaceholder(
     points: List<TrackPoint>,
+    plannedPoints: List<TrackPoint> = emptyList(),
+    waypointMarkers: List<Pair<Double, Double>> = emptyList(),
     modifier: Modifier = Modifier,
     photoPositions: List<Pair<Double, Double>> = emptyList(),
     onPhotoTap: ((Int) -> Unit)? = null,
     followLastPoint: Boolean = false,
     currentPosition: Pair<Double, Double>? = null,
     locateTick: Int = 0,
-    onLocate: (() -> Unit)? = null
+    onLocate: (() -> Unit)? = null,
+    onMapTap: ((Double, Double) -> Unit)? = null,
+    onMapLongPress: ((Double, Double) -> Unit)? = null,
+    /**
+     * Sprint 65: builder point editing on the map itself.
+     *  - [onWaypointTap] - a plain tap on an existing marker (the caller confirms the delete);
+     *  - [onWaypointMove] - index + new lat/lon, fired once when the finger LIFTS after a
+     *    long-press drag on a marker, so the routing debounce sees a single change.
+     * Both take priority over "add a point": a press that lands on a marker never adds.
+     */
+    onWaypointTap: ((Int) -> Unit)? = null,
+    onWaypointMove: ((Int, Double, Double) -> Unit)? = null,
+    /** Sprint 61: where to look before any route/fix exists (builder opening screen). */
+    initialCentre: Pair<Double, Double>? = null,
+    /** Sprint 62: index inside [waypointMarkers] painted red - the route start (waypoint #1). */
+    startMarkerIndex: Int = -1,
+    /**
+     * Sprint 62: the builder renders its own GPS status (and a "turn GPS on" dialog), so it
+     * switches this hint off to avoid a second "GPS is off" message on top of the dialog.
+     */
+    warnNoFixOnLocate: Boolean = true
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -158,12 +231,20 @@ fun RouteMapPlaceholder(
         if (useCanvas) {
             RouteMapCanvas(
                 points = points,
+                plannedPoints = plannedPoints,
+                waypointMarkers = waypointMarkers,
                 photoPositions = photoPositions,
                 onPhotoTap = onPhotoTap,
                 modifier = Modifier.fillMaxSize(),
                 currentPosition = currentPosition,
                 followLastPoint = followLastPoint,
                 locateTick = locateTick,
+                onMapTap = onMapTap,
+                onMapLongPress = onMapLongPress,
+                onWaypointTap = onWaypointTap,
+                onWaypointMove = onWaypointMove,
+                initialCentre = initialCentre,
+                startMarkerIndex = startMarkerIndex,
                 mapLoadingText = if (!online) null else stringResource(R.string.loading_map)
             )
             when {
@@ -208,7 +289,7 @@ fun RouteMapPlaceholder(
                         flashing = false
                     }
                     // No fix yet -> tell the user instead of silently doing nothing.
-                    if (currentPosition == null) {
+                    if (currentPosition == null && warnNoFixOnLocate) {
                         scope.launch {
                             snackbarHostState.showSnackbar(
                                 message = gpsDisabledText,
@@ -476,6 +557,8 @@ private fun MapLibreRouteMap(
     followLastPoint: Boolean,
     currentPosition: Pair<Double, Double>?,
     online: Boolean,
+    onMapTap: ((Double, Double) -> Unit)? = null,
+    onMapLongPress: ((Double, Double) -> Unit)? = null,
     onCreationFailed: () -> Unit,
     onStyleResult: (Boolean, String?) -> Unit,
     modifier: Modifier = Modifier
@@ -560,7 +643,18 @@ private fun MapLibreRouteMap(
                     Log.i("RouteMap", "MapLibre backend: ${MapLibre.getInstance(appContext)}")
                     map.addOnMapClickListener { latLng ->
                         if (holder.map !== map || !holder.isAlive()) return@addOnMapClickListener false
-                        runCatching { holder.handleTap(map, latLng) }.getOrDefault(false)
+                        if (runCatching { holder.handleTap(map, latLng) }.getOrDefault(false)) true
+                        else {
+                            onMapTap?.invoke(latLng.latitude, latLng.longitude)
+                            onMapTap != null
+                        }
+                    }
+                    map.addOnMapLongClickListener { latLng ->
+                        if (holder.map !== map || !holder.isAlive()) false
+                        else {
+                            onMapLongPress?.invoke(latLng.latitude, latLng.longitude)
+                            onMapLongPress != null
+                        }
                     }
                     map.addOnCameraMoveStartedListener { reason ->
                         if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
@@ -657,12 +751,25 @@ private fun MapLibreRouteMap(
 @Composable
 private fun BoxScope.RouteMapCanvas(
     points: List<TrackPoint>,
+    plannedPoints: List<TrackPoint> = emptyList(),
+    waypointMarkers: List<Pair<Double, Double>> = emptyList(),
     photoPositions: List<Pair<Double, Double>>,
     onPhotoTap: ((Int) -> Unit)?,
+    onMapTap: ((Double, Double) -> Unit)? = null,
+    onMapLongPress: ((Double, Double) -> Unit)? = null,
+    /** Sprint 65: see the same parameters on [RouteMapPlaceholder]. */
+    onWaypointTap: ((Int) -> Unit)? = null,
+    onWaypointMove: ((Int, Double, Double) -> Unit)? = null,
     modifier: Modifier = Modifier,
     currentPosition: Pair<Double, Double>? = null,
     followLastPoint: Boolean = false,
+    /**
+     * Sprint 62: index inside [waypointMarkers] painted as the red "start" marker (route
+     * waypoint #1). -1 keeps every marker blue, so tracking / track detail stay as before.
+     */
+    startMarkerIndex: Int = -1,
     locateTick: Int = 0,
+    initialCentre: Pair<Double, Double>? = null,
     mapLoadingText: String? = null
 ) {
     val context = LocalContext.current
@@ -679,6 +786,7 @@ private fun BoxScope.RouteMapCanvas(
         }
         bitmap.asImageBitmap()
     }
+
     val hasRoute = points.size >= 2
 
     // Gentle pulse for the "me" marker (0 -> 1 -> 0).
@@ -696,10 +804,23 @@ private fun BoxScope.RouteMapCanvas(
     // Geo window to cover: the route, or just the current fix when nothing is recorded yet.
     // While recording (followLastPoint) the mosaic follows the live fix instead of the
     // whole route, like the MapLibre follow mode did.
-    val minLat = if (hasRoute) points.minOf { it.lat } else currentPosition?.first ?: 0.0
-    val maxLat = if (hasRoute) points.maxOf { it.lat } else currentPosition?.first ?: 0.0
-    val minLon = if (hasRoute) points.minOf { it.lon } else currentPosition?.second ?: 0.0
-    val maxLon = if (hasRoute) points.maxOf { it.lon } else currentPosition?.second ?: 0.0
+    // Sprint 61: in the builder there is no recorded route yet, so the window also takes the
+    // planned line, the waypoints and the fix into account; before any of them exists the
+    // caller supplies initialCentre so the map opens on something meaningful.
+    val windowPoints: List<TrackPoint> = if (hasRoute) points else buildList {
+        addAll(points)
+        addAll(plannedPoints)
+        waypointMarkers.forEach { add(TrackPoint(it.first, it.second, 0.0, 0f, 0f, 0L)) }
+        currentPosition?.let { add(TrackPoint(it.first, it.second, 0.0, 0f, 0f, 0L)) }
+    }
+    val minLat =
+        if (windowPoints.isNotEmpty()) windowPoints.minOf { it.lat } else initialCentre?.first ?: 0.0
+    val maxLat =
+        if (windowPoints.isNotEmpty()) windowPoints.maxOf { it.lat } else initialCentre?.first ?: 0.0
+    val minLon =
+        if (windowPoints.isNotEmpty()) windowPoints.minOf { it.lon } else initialCentre?.second ?: 0.0
+    val maxLon =
+        if (windowPoints.isNotEmpty()) windowPoints.maxOf { it.lon } else initialCentre?.second ?: 0.0
     val followFix: Pair<Double, Double>? = if (followLastPoint) currentPosition else null
     val centerLat = followFix?.first ?: ((minLat + maxLat) / 2.0)
     val centerLon = followFix?.second ?: ((minLon + maxLon) / 2.0)
@@ -732,7 +853,10 @@ private fun BoxScope.RouteMapCanvas(
     val tileY = kotlin.math.floor(viewY * tileN).toInt().coerceIn(0, tileN - 1)
     var mosaic by remember { mutableStateOf<OsmTileLayer.Mosaic?>(null) }
     var mapLoading by remember { mutableStateOf(false) }
-    val hasPosition = currentPosition != null || points.isNotEmpty()
+    // Sprint 61: the builder opens with no fix and no waypoints, so initialCentre alone must
+    // be enough to start loading tiles - otherwise the map stays blank on first visit.
+    val hasPosition = currentPosition != null || points.isNotEmpty() ||
+        plannedPoints.isNotEmpty() || waypointMarkers.isNotEmpty() || initialCentre != null
     val showMapLoading = !hasRoute && mapLoading && hasPosition
     // One fetch path, debounced by viewport tile/zoom, not by every GPS fix.
     LaunchedEffect(tileZoom, tileX, tileY, hasPosition) {
@@ -760,17 +884,139 @@ private fun BoxScope.RouteMapCanvas(
         userZoom = nextZoom
         locateFollow = false
     })
-    fun project(lat: Double, lon: Double, width: Float, height: Float): Offset = Offset(
-        (width / 2.0 + ((lon + 180.0) / 360.0 - viewX) * worldPixels).toFloat(),
-        (height / 2.0 + (OsmTileLayer.mercYTiles(lat) - viewY) * worldPixels).toFloat()
-    )
+    // Sprint 62: pointer handlers live inside `pointerInput(Unit)`, so a closure over the plain
+    // viewX/viewY/zoom vals keeps the camera of the frame the handler was created in. After a
+    // pinch/drag that meant every long-press converted the OLD viewport back to lat/lon and the
+    // waypoint landed far from the finger. This snapshot is refreshed on every recomposition and
+    // the handlers read it through [latestCam], i.e. always the camera the user is looking at.
+    val cam = CanvasCamera(viewX, viewY, zoom, worldPixels)
+    val latestCam = rememberUpdatedState(cam)
+    fun project(lat: Double, lon: Double, width: Float, height: Float): Offset =
+        cam.project(lat, lon, width, height)
 
-    val tapModifier = if (onPhotoTap != null && photoPositions.isNotEmpty()) {
-        Modifier.pointerInput(photoPositions) {
+    val wantTap = onPhotoTap != null && photoPositions.isNotEmpty() || onMapTap != null ||
+        onWaypointTap != null
+    // Sprint 61: a builder waypoint is created only by a hold without dragging or a
+    // second finger; drag/pinch stay untouched because nothing here is ever consumed.
+    // The hold is measured in wall-clock time: a motionless finger produces no pointer events
+    // at all, so counting events instead of time never reaches the threshold on a real device.
+    // Sprint 65: the hold is ~0.9 s, and a press that STARTS on a marker is a drag, not an add.
+    val pressDensity = LocalDensity.current.density
+    val hitRadiusPx = WAYPOINT_HIT_DP * pressDensity
+    val latestLongPress = rememberUpdatedState(onMapLongPress)
+    val latestWaypointTap = rememberUpdatedState(onWaypointTap)
+    val latestWaypointMove = rememberUpdatedState(onWaypointMove)
+    val latestWaypoints = rememberUpdatedState(waypointMarkers)
+    // Sprint 62: hold feedback - an anchor in *screen* space plus a filling ring, so the user
+    // sees that the press is being registered (previously a press looked dead for 2 seconds).
+    var holdAnchor by remember { mutableStateOf<Offset?>(null) }
+    var holdStartedAt by remember { mutableStateOf(0L) }
+    val longPressModifier = if (onMapLongPress != null || onWaypointMove != null) {
+        Modifier.pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val startId = down.id
+                val startPos = down.position
+                val slopPx = LONG_PRESS_TOUCH_SLOP_DP * pressDensity
+
+                // Sprint 65: which marker (if any) the press landed on, in screen pixels.
+                // The hit test wins over "add a point", so the two gestures never conflict.
+                val size0 = canvasSize
+                val hitIndex: Int? = if (size0.width > 0 && size0.height > 0 &&
+                    latestWaypointMove.value != null
+                ) {
+                    val camera = latestCam.value
+                    latestWaypoints.value.indices.firstOrNull { i ->
+                        val marker = latestWaypoints.value[i]
+                        val center = camera.project(
+                            marker.first, marker.second,
+                            size0.width.toFloat(), size0.height.toFloat()
+                        )
+                        val dx = startPos.x - center.x
+                        val dy = startPos.y - center.y
+                        dx * dx + dy * dy <= hitRadiusPx * hitRadiusPx
+                    }
+                } else {
+                    null
+                }
+
+                if (hitIndex != null) {
+                    // Drag branch: no add, no ring - just follow the finger and commit on lift.
+                    val dragRadius = 48f * pressDensity
+                    var lastPos = startPos
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == startId }
+                        if (change == null || !change.pressed) break
+                        if (event.changes.size > 1) break
+                        lastPos = change.position
+                        // Panning the map with the same finger is still possible: a huge jump
+                        // means the gesture is not a marker drag, so it is abandoned silently.
+                        if ((lastPos - startPos).getDistance() > dragRadius) lastPos = startPos
+                    }
+                    val size = canvasSize
+                    if (size.width > 0 && size.height > 0 && lastPos != startPos) {
+                        val camera = latestCam.value
+                        val (lat, lon) = camera.toLatLon(
+                            lastPos.x, lastPos.y,
+                            size.width.toFloat(), size.height.toFloat()
+                        )
+                        latestWaypointMove.value?.invoke(hitIndex, lat, lon)
+                    }
+                    return@awaitEachGesture
+                }
+
+                holdAnchor = startPos
+                holdStartedAt = System.nanoTime()
+                // Any cancel event (lift, drag past the slop, second finger) returns true;
+                // a timeout - no cancel inside the window - means the finger really held still.
+                val cancelled = withTimeoutOrNull(LONG_PRESS_HOLD_MS) {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == startId }
+                        if (change == null || !change.pressed) {
+                            return@withTimeoutOrNull true
+                        }
+                        if (event.changes.size > 1 ||
+                            (change.position - startPos).getDistance() > slopPx
+                        ) {
+                            return@withTimeoutOrNull true
+                        }
+                    }
+                }
+                holdAnchor = null
+                if (cancelled == null) {
+                    val size = canvasSize
+                    if (size.width > 0 && size.height > 0) {
+                        val camera = latestCam.value
+                        val (lat, lon) = camera.toLatLon(
+                            startPos.x, startPos.y,
+                            size.width.toFloat(), size.height.toFloat()
+                        )
+                        // Sprint 62: freeze the viewport the moment a point is placed - the
+                        // auto-fit window must not pull the map away from where the user works.
+                        manualCenter = camera.viewX to camera.viewY
+                        userZoom = camera.zoom
+                        locateFollow = false
+                        latestLongPress.value?.invoke(lat, lon)
+                    }
+                }
+            }
+        }
+    } else {
+        Modifier
+    }
+
+    val tapModifier = if (wantTap) {
+        Modifier.pointerInput(photoPositions, onMapTap) {
             detectTapGestures { tap ->
-                val index = photoPositions.indices.firstOrNull { i ->
+                val camera = latestCam.value
+                val (lat, lon) = camera.toLatLon(
+                    tap.x, tap.y, size.width.toFloat(), size.height.toFloat()
+                )
+                val photoIndex = photoPositions.indices.firstOrNull { i ->
                     val position = photoPositions[i]
-                    val offset = project(
+                    val offset = camera.project(
                         position.first, position.second,
                         size.width.toFloat(), size.height.toFloat()
                     )
@@ -778,7 +1024,30 @@ private fun BoxScope.RouteMapCanvas(
                     val dy = tap.y - offset.y
                     dx * dx + dy * dy <= TAP_RADIUS_PX * TAP_RADIUS_PX
                 }
-                if (index != null) onPhotoTap(index)
+                if (photoIndex != null) {
+                    onPhotoTap?.invoke(photoIndex)
+                } else {
+                    // Sprint 65: a tap on an existing builder marker edits it (the caller
+                    // confirms the delete) instead of reaching the map-tap handler.
+                    val waypointIndex = latestWaypointTap.value?.let { _ ->
+                        waypointMarkers.indices.firstOrNull { i ->
+                            val marker = waypointMarkers[i]
+                            val center = camera.project(
+                                marker.first, marker.second,
+                                size.width.toFloat(), size.height.toFloat()
+                            )
+                            val dx = tap.x - center.x
+                            val dy = tap.y - center.y
+                            dx * dx + dy * dy <= hitRadiusPx * hitRadiusPx
+                        }
+                    }
+                    if (waypointIndex != null) {
+                        latestWaypointTap.value?.invoke(waypointIndex)
+                    } else {
+                        // Builder ignores short taps: waypoints come only from long-press.
+                        onMapTap?.invoke(lat, lon)
+                    }
+                }
             }
         }
     } else {
@@ -789,10 +1058,15 @@ private fun BoxScope.RouteMapCanvas(
         .clipToBounds()
         .onSizeChanged { canvasSize = it }
         .then(tapModifier)
+        .then(longPressModifier)
         .pointerInput(Unit) {
             detectTransformGestures { centroid, pan, scale, _ -> transform(centroid, pan, scale) }
         }
     ) {
+        // Sprint 62: reading the infinite transition *inside* the draw scope keeps this canvas
+        // invalidating every frame - that is what makes the hold-progress ring animate even when
+        // there is no "me" dot on screen yet.
+        val framePulse = pulsePhase
         // Map imagery first (when downloaded), then route, photos and the "me" dot.
         mosaic?.let { m ->
             val n = (1 shl m.zoom).toDouble()
@@ -806,6 +1080,22 @@ private fun BoxScope.RouteMapCanvas(
             }) {
                 drawImage(m.bitmap.asImageBitmap())
             }
+        }
+        if (plannedPoints.size >= 2) {
+            val plannedPath = Path()
+            plannedPoints.forEachIndexed { index, point ->
+                val offset = project(point.lat, point.lon, size.width, size.height)
+                if (index == 0) plannedPath.moveTo(offset.x, offset.y) else plannedPath.lineTo(offset.x, offset.y)
+            }
+            drawPath(plannedPath, color = Color(0xFF1565C0), style = Stroke(width = 10f))
+        }
+        // Sprint 61: builder waypoints (numbered markers, visible immediately).
+        // Sprint 62: waypoint #1 (the start) is painted red so the chain direction is obvious.
+        waypointMarkers.forEachIndexed { index, marker ->
+            val center = project(marker.first, marker.second, size.width, size.height)
+            val markerFill = if (index == startMarkerIndex) Color(0xFFD32F2F) else Color(0xFF1565C0)
+            drawCircle(Color.White, radius = 17f, center = center)
+            drawCircle(markerFill, radius = 14f, center = center)
         }
         if (hasRoute) {
             val path = Path()
@@ -840,6 +1130,24 @@ private fun BoxScope.RouteMapCanvas(
             drawCircle(Color(0xFF0D47A1), radius = 18f, center = meCenter)
             drawCircle(Color(0xFF2196F3), radius = 15f, center = meCenter)
             drawCircle(androidx.compose.ui.graphics.Color.White, radius = 15f, center = meCenter, style = Stroke(width = 4f))
+        }
+        // Sprint 62: hold-to-place feedback. The anchor is stored in screen space (the camera is
+        // frozen while the finger is down), and the pulse animation already invalidates the
+        // canvas every frame, so the ring fills without any extra coroutine.
+        holdAnchor?.let { anchor ->
+            val elapsed = (System.nanoTime() - holdStartedAt) / 1_000_000f
+            val progress = (elapsed / LONG_PRESS_HOLD_MS).coerceIn(0f, 1f)
+            drawCircle(Color(0x66FFFFFF), radius = 34f + 2f * framePulse, center = anchor)
+            drawCircle(Color(0x33000000), radius = 34f, center = anchor, style = Stroke(width = 6f))
+            drawArc(
+                color = Color(0xFFD32F2F),
+                startAngle = -90f,
+                sweepAngle = 360f * progress,
+                useCenter = false,
+                topLeft = Offset(anchor.x - 34f, anchor.y - 34f),
+                size = Size(68f, 68f),
+                style = Stroke(width = 6f)
+            )
         }
     }
     if (showMapLoading && mapLoadingText != null) {

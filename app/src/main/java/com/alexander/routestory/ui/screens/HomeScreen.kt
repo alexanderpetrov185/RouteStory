@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.PlayArrow
@@ -56,11 +57,15 @@ fun HomeScreen(
     onStartTracking: () -> Unit = {},
     onOpenHistory: () -> Unit = {},
     onOpenPro: () -> Unit = {},
+    onBuildRoute: () -> Unit = {},
+    onOpenSavedRoutes: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val isPro by viewModel.isPro.collectAsStateWithLifecycle()
     var dontAskAgain by remember { mutableStateOf(false) }
+    /** Sprint 62: the single "Routes" entry opens a small choice dialog. */
+    var routesDialog by remember { mutableStateOf(false) }
 
     // Ask about an interrupted ride as soon as the app opens.
     LaunchedEffect(Unit) { viewModel.checkDraft() }
@@ -182,8 +187,40 @@ fun HomeScreen(
                         label = stringResource(R.string.pro_title)
                     )
                 }
+                Button(
+                    onClick = { routesDialog = true },
+                    modifier = Modifier.fillMaxWidth(BUTTON_WIDTH_FRACTION).height(BUTTON_HEIGHT),
+                    colors = homeButtonColors(),
+                    contentPadding = PaddingValues(vertical = 14.dp)
+                ) {
+                    // Sprint 62: "Build route" and "Saved routes" became one "Routes" entry so the
+                    // home list stays short.
+                    HomeButtonContent(
+                        icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null, modifier = Modifier.size(20.dp), tint = BrandButtonContent) },
+                        label = stringResource(R.string.home_routes)
+                    )
+                }
             }
         }
+    }
+    if (routesDialog) {
+        AlertDialog(
+            onDismissRequest = { routesDialog = false },
+            title = { Text(stringResource(R.string.home_routes)) },
+            text = { Text(stringResource(R.string.home_routes_hint)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    routesDialog = false
+                    onBuildRoute()
+                }) { Text(stringResource(R.string.route_create)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    routesDialog = false
+                    onOpenSavedRoutes()
+                }) { Text(stringResource(R.string.route_open_saved)) }
+            }
+        )
     }
 }
 
@@ -200,15 +237,23 @@ private fun homeButtonColors() = ButtonDefaults.buttonColors(
 /**
  * Fixed-width content row: the icon starts at the same x on every button, the whole block is
  * centered inside the button by Material3, and icon/label share one vertical centre line.
+ * Sprint 62: the row may grow and the label may wrap instead of being clipped, so long Russian
+ * strings ("Сохранённые маршруты") stay readable.
  */
 @Composable
 private fun HomeButtonContent(icon: @Composable () -> Unit, label: String) {
     Row(
-        modifier = Modifier.width(200.dp),
+        modifier = Modifier.widthIn(min = 200.dp, max = 260.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         icon()
         Spacer(modifier = Modifier.width(12.dp))
-        Text(text = label, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text = label,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Start,
+            maxLines = 2
+        )
     }
 }

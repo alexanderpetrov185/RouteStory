@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.alexander.routestory.domain.PlannedRoute
+import com.alexander.routestory.domain.PlannedRoutePoint
 import com.alexander.routestory.domain.Track
 import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.domain.TrackRepository
@@ -35,7 +37,8 @@ class TrackDetailViewModel @Inject constructor(
     private val repository: TrackRepository,
     private val videoStateHolder: VideoExportStateHolder,
     private val proRepository: ProRepository,
-    private val sfxPreferences: SfxPreferences
+    private val sfxPreferences: SfxPreferences,
+    private val plannedRouteRepository: com.alexander.routestory.data.PlannedRouteRepository
 ) : ViewModel() {
 
     private val trackId: Long = savedStateHandle.get<Long>(ARG_TRACK_ID) ?: -1L
@@ -52,12 +55,94 @@ class TrackDetailViewModel @Inject constructor(
     private val _notFound = MutableStateFlow(false)
     val notFound: StateFlow<Boolean> = _notFound.asStateFlow()
 
+    /**
+     * Sprint 65: the planned route created from THIS ride, or null while there is none.
+     * Drives the "уже сохранено" state of the button, so repeated taps cannot pile up
+     * duplicate rows in "Сохранённые".
+     */
+    private val _routeSavedForRide = MutableStateFlow<Long?>(null)
+    val routeSavedForRide: StateFlow<Long?> = _routeSavedForRide.asStateFlow()
+
+    /**
+     * Sprint 65: saves the finished ride as a reusable planned route.
+     *
+     * The real GPS track becomes the route geometry (simplified to [MAX_ROUTE_GEOMETRY]
+     * points, because the geometry is stored as one "lat,lon;..." string). The waypoints
+     * are the evenly spaced chain start -> ... -> end, so "Начать" from "Сохранённые" can
+     * rebuild the same road with OSRM. No network call happens here: the recorded track is
+     * already the answer, and OSRM would only re-route what we just drove.
+     *
+     * @return true when a new route was created, false when this ride already has one.
+     */
+    suspend fun saveAsPlannedRoute(track: Track): Boolean {
+        _routeSavedForRide.value?.let { return false }
+        if (track.points.size < 2) return false
+        val geometry = simplify(track.points.map { PlannedRoutePoint(it.lat, it.lon, 0) })
+        if (geometry.size < 2) return false
+        val route = PlannedRoute(
+            name = track.name,
+            distanceMeters = track.distance,
+            createdAt = System.currentTimeMillis(),
+            geometry = geometry,
+            waypoints = waypointsFor(track)
+        )
+        val id = runCatching { plannedRouteRepository.save(route) }.getOrNull() ?: return false
+        _routeSavedForRide.value = id
+        return true
+    }
+
+    /** Even stride thinning, first and last always kept (the route endpoints). */
+    private fun simplify(points: List<PlannedRoutePoint>): List<PlannedRoutePoint> {
+        if (points.size <= MAX_ROUTE_GEOMETRY) {
+            return points.mapIndexed { i, p -> p.copy(order = i) }
+        }
+        val step = (points.size - 1).toDouble() / (MAX_ROUTE_GEOMETRY - 1)
+        return (0 until MAX_ROUTE_GEOMETRY).map { i ->
+            points[(i * step).toInt().coerceAtMost(points.size - 1)].copy(order = i)
+        }
+    }
+
+    /** Chain of at most 10 evenly spaced points along the recorded track. */
+    private fun waypointsFor(track: Track): List<PlannedRoutePoint> {
+        val pts = track.points
+        if (pts.size <= 2) {
+            return pts.mapIndexed { i, p -> PlannedRoutePoint(p.lat, p.lon, i) }
+        }
+        val count = minOf(ROUTE_WAYPOINT_CHAIN, pts.size)
+        val step = (pts.size - 1).toDouble() / (count - 1)
+        return (0 until count).map { i ->
+            val p = pts[(i * step).toInt().coerceAtMost(pts.size - 1)]
+            PlannedRoutePoint(p.lat, p.lon, i)
+        }
+    }
+
     init {
         viewModelScope.launch {
             val loaded = repository.getTrack(trackId)
             if (loaded == null) _notFound.value = true else _track.value = loaded
+            // Sprint 65: the ViewModel is recreated every time the ride is opened from
+            // History, so the "already saved" state is re-derived from the database instead
+            // of living only in memory - that is what makes the button truly idempotent.
+            if (loaded != null) {
+                val existing = runCatching {
+                    plannedRouteRepository.observeAll().first()
+                }.getOrDefault(emptyList())
+                _routeSavedForRide.value = existing.firstOrNull { matches(it, loaded) }?.id
+            }
         }
     }
+
+    /**
+     * Sprint 65: a route is "from this ride" when it carries the ride name and its
+     * distance (rounded to metres - two different rides of the same name keep their own
+     * rows). Deliberately simple: no schema change, no sourceTrackId column.
+     */
+    private fun matches(
+        route: com.alexander.routestory.domain.PlannedRoute,
+        track: Track
+    ): Boolean =
+        route.name == track.name &&
+            kotlin.math.abs(route.distanceMeters - track.distance) < 1f
 
     fun deleteTrack() {
         viewModelScope.launch {
@@ -94,8 +179,10 @@ class TrackDetailViewModel @Inject constructor(
     /**
      * Starts the foreground VideoExportService: it loads the track, resolves the limits
      * and runs the export, so a swipe from recents cannot kill the process mid-encode.
+     * Sprint 63: the clip length is not passed in - the export always resolves it from
+     * distance, photos and the encode budget.
      */
-    fun createVideo(track: Track, keepSfx: Boolean, targetTotalSec: Int? = null) {
+    fun createVideo(track: Track, keepSfx: Boolean) {
         if (videoStateHolder.state.value is VideoExportState.Running) return
         val intent = Intent(context, VideoExportService::class.java)
             .putExtra(VideoExportService.EXTRA_TRACK_ID, track.id)
@@ -103,8 +190,6 @@ class TrackDetailViewModel @Inject constructor(
         _musicPath.value?.let { intent.putExtra(VideoExportService.EXTRA_BGM_PATH, it) }
         // Sprint 43: SFX toggle - when off the cues are muted, BGM stays.
         intent.putExtra(VideoExportService.EXTRA_KEEP_SFX, keepSfx)
-        // Sprint 49: explicit total clip length (30/60/120/180 s); null = auto.
-        targetTotalSec?.let { intent.putExtra(VideoExportService.EXTRA_TARGET_SEC, it) }
         ContextCompat.startForegroundService(context, intent)
     }
 
@@ -181,5 +266,16 @@ class TrackDetailViewModel @Inject constructor(
 
     companion object {
         const val ARG_TRACK_ID = "trackId"
+
+        /**
+         * Sprint 65: the planned route geometry is stored as one "lat,lon;..." string in
+         * Room, so a long ride is thinned to this many points before it is written. The
+         * recorded track has a point every few metres; 400 is far more detail than the
+         * builder map needs, and keeps the row small.
+         */
+        const val MAX_ROUTE_GEOMETRY = 400
+
+        /** Waypoint chain length for a route saved from a ride (OSRM accepts 2..10). */
+        const val ROUTE_WAYPOINT_CHAIN = 10
     }
 }

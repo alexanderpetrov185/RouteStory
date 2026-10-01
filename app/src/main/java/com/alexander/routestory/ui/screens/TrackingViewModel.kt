@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import com.alexander.routestory.data.ProRepository
 import com.alexander.routestory.domain.TrackPhoto
 import com.alexander.routestory.domain.TrackingState
+import com.alexander.routestory.utils.LocationFixProvider
 import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import java.io.File
@@ -23,8 +24,6 @@ import com.alexander.routestory.domain.TrackingUiState
 import com.alexander.routestory.service.TrackRecordingService
 import com.alexander.routestory.service.TrackSaveOutcome
 import com.alexander.routestory.service.TrackingStateHolder
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.StateFlow
@@ -35,9 +34,23 @@ class TrackingViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val stateHolder: TrackingStateHolder,
     private val savedState: SavedStateHandle,
-    private val proRepository: ProRepository
+    private val proRepository: ProRepository,
+    private val plannedRouteRepository: com.alexander.routestory.data.PlannedRouteRepository,
+    private val fixProvider: LocationFixProvider
 ) : ViewModel() {
     val isPro = proRepository.isPro.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    init {
+        savedState.get<Long>("routeId")?.let { loadPlannedRoute(it) }
+    }
+
+    fun loadPlannedRoute(id: Long) {
+        viewModelScope.launch {
+            val cached = stateHolder.uiState.value.plannedRoute
+            if (cached?.id == id) return@launch
+            plannedRouteRepository.getById(id)?.let { stateHolder.setPlannedRoute(it) }
+        }
+    }
     private val _photoErrors = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val photoErrors = _photoErrors.asSharedFlow()
 
@@ -143,19 +156,16 @@ class TrackingViewModel @Inject constructor(
      * Sprint 14: seed the map with the last known location + one quick fix BEFORE the
      * recording starts, so the tile mosaic and the "me" dot appear immediately on
      * screen entry instead of waiting for the first recorded track point.
+     * Sprint 61: shared LocationFixProvider (same helper as RouteBuilder).
      */
     fun requestInitialFix(force: Boolean = false) {
         if (stateHolder.uiState.value.lastFix != null && !force) return
-        runCatching {
-            val client = LocationServices.getFusedLocationProviderClient(context)
-            val apply: (android.location.Location?) -> Unit = { loc ->
-                if (loc != null && (force || stateHolder.uiState.value.lastFix == null)) {
-                    stateHolder.update { it.copy(lastFix = loc.latitude to loc.longitude) }
+        viewModelScope.launch {
+            runCatching { fixProvider.requestFix(context, force) }.getOrNull()?.let { fix ->
+                if (force || stateHolder.uiState.value.lastFix == null) {
+                    stateHolder.update { it.copy(lastFix = fix) }
                 }
             }
-            client.lastLocation.addOnSuccessListener(apply)
-            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                .addOnSuccessListener(apply)
         }
     }
 

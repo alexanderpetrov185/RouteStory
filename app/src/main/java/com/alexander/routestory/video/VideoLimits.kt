@@ -59,7 +59,11 @@ data class VideoLimits(
          * camera zoom 2 + finish 5 + outro 2. Photo holds are additional.
          */
         const val FIXED_NON_MOVE_SEC = 15
-        /** Auto and explicit map-movement budget both stop at two minutes. */
+        /**
+         * Sprint 63: the ceiling on the clean marker MOVE part. It is a product decision
+         * about how long a video may be at all - not a user-selectable duration: the map
+         * budget is always auto-derived from the ride and clamped by this cap.
+         */
         const val MAX_MAP_MOVE_SEC = 120
         /** Total photo-pause budget; per-photo hold never exceeds 5 s. */
         private const val PHOTO_PAUSE_BUDGET_SEC = 60f
@@ -67,15 +71,17 @@ data class VideoLimits(
         private const val MIN_PHOTO_HOLD_SEC = 1f
 
         /**
-         * Chosen [targetMapSec] is the clean MOVE time in which the marker travels.
-         * VideoLimits.durationSec includes the four stationary map-camera seconds, while
-         * intro/finish/outro and actual photo holds remain additional to that value.
+         * Sprint 63: the map-movement budget is ALWAYS derived from the ride (auto). The old
+         * optional duration argument (30/60/120 s from the Create-video dialog) is gone: the
+         * UI no longer offers a duration choice, so there is nothing to pass down.
+         *
+         * [VideoLimits.durationSec] is the clean MOVE time plus the four stationary
+         * map-camera seconds; intro/finish/outro and photo holds remain additional to it.
          */
         fun fitEncode(
             isPro: Boolean,
             distanceMeters: Float,
-            photoCount: Int,
-            targetMapSec: Int? = null
+            photoCount: Int
         ): VideoLimits {
             val base = resolve(isPro, distanceMeters)
             val cameraIntroSec = 4 // TILT_SEC + ZOOM_SEC from RouteVideoTimeline.
@@ -92,20 +98,14 @@ data class VideoLimits(
                     photoPauseSec(durationSec)) * f
             }
 
-            val requestedMapSec = if (targetMapSec != null) {
-                targetMapSec.coerceIn(MIN_ENCODE_SEC, MAX_MAP_MOVE_SEC)
-            } else {
-                base.durationSec.coerceIn(MIN_ENCODE_SEC, MAX_MAP_MOVE_SEC)
-            }
+            val requestedMapSec = base.durationSec.coerceIn(MIN_ENCODE_SEC, MAX_MAP_MOVE_SEC)
             var fps = base.fps
             var mapSec = requestedMapSec
             while (totalFrames(mapSec, fps) > MAX_ENCODE_FRAMES && fps > MIN_ENCODE_FPS) fps--
-            // Explicit choices keep their marker MOVE time; auto may also shorten the
-            // map part so fixed cards + photos do not grow without a controlled budget.
-            if (targetMapSec == null) {
-                while (totalFrames(mapSec, fps) > MAX_ENCODE_FRAMES &&
-                    mapSec > MIN_ENCODE_SEC) mapSec--
-            }
+            // Photo pauses and the fixed cards live outside the frame budget too, so the
+            // map part shrinks as well: the marker simply moves a little slower.
+            while (totalFrames(mapSec, fps) > MAX_ENCODE_FRAMES &&
+                mapSec > MIN_ENCODE_SEC) mapSec--
             val durationSec = mapSec + cameraIntroSec
             return if (durationSec == base.durationSec && fps == base.fps) base
             else base.copy(durationSec = durationSec, fps = fps)
