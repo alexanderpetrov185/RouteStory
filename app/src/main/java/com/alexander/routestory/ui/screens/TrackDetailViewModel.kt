@@ -17,6 +17,7 @@ import com.alexander.routestory.service.VideoExportStateHolder
 import com.alexander.routestory.service.VideoExportService
 import android.content.Intent
 import androidx.core.content.ContextCompat
+import java.io.FileOutputStream
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +39,8 @@ class TrackDetailViewModel @Inject constructor(
     private val videoStateHolder: VideoExportStateHolder,
     private val proRepository: ProRepository,
     private val sfxPreferences: SfxPreferences,
-    private val plannedRouteRepository: com.alexander.routestory.data.PlannedRouteRepository
+    private val plannedRouteRepository: com.alexander.routestory.data.PlannedRouteRepository,
+    private val renderer: com.alexander.routestory.utils.TripSnapshotRenderer
 ) : ViewModel() {
 
     private val trackId: Long = savedStateHandle.get<Long>(ARG_TRACK_ID) ?: -1L
@@ -217,6 +219,66 @@ class TrackDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Sprint 69: HQ trip photo card (OSM scheme / Esri satellite) rendered on-device.
+     * Save goes to the gallery via MediaStore (scoped storage, no permission on 29+),
+     * share via a FileProvider file. One bitmap at a time; caller recycles the preview.
+     */
+    suspend fun renderTripPhoto(
+        track: Track,
+        style: com.alexander.routestory.utils.TripSnapshotRenderer.Style
+    ): android.graphics.Bitmap? = renderer.render(track, style)
+
+    fun saveTripPhotoToGallery(
+        bitmap: android.graphics.Bitmap,
+        trackId: Long,
+        style: com.alexander.routestory.utils.TripSnapshotRenderer.Style
+    ): Boolean = runCatching {
+        val name = "routestory_trip_${trackId}_${style.name.lowercase()}.jpg"
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(
+                android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                "Pictures/RouteStory"
+            )
+        }
+        val uri = context.contentResolver.insert(
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+        ) ?: return false
+        context.contentResolver.openOutputStream(uri)?.use { out ->
+            if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, out)) {
+                context.contentResolver.delete(uri, null, null)
+                return false
+            }
+        } ?: return false
+        true
+    }.getOrDefault(false)
+
+    fun shareTripPhoto(
+        bitmap: android.graphics.Bitmap,
+        trackId: Long,
+        style: com.alexander.routestory.utils.TripSnapshotRenderer.Style
+    ) {
+        val dir = File(context.filesDir, "trip_photos").apply { mkdirs() }
+        val file = File(dir, "trip_${trackId}_${style.name.lowercase()}.jpg")
+        FileOutputStream(file).use { out ->
+            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        }
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, context.packageName + ".fileprovider", file
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/jpeg"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(Intent.createChooser(intent, null).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
     }
 
     /** Previously exported video for a ride, or null when none was made yet. */

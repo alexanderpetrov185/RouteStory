@@ -21,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -52,6 +53,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -236,7 +238,8 @@ fun TrackDetailScreen(
                         }
                     }
                     Text(
-                        GeoUtils.formatDate(current.startTime),
+                        // Sprint 68: the whole ride window (start-end) in the device time zone.
+                        GeoUtils.formatTimeRange(current.startTime, current.endTime),
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -249,6 +252,23 @@ fun TrackDetailScreen(
                     DetailStat(stringResource(R.string.stat_avg_speed), GeoUtils.formatSpeed(avgSpeed(current)))
                     DetailStat(stringResource(R.string.stat_max_speed), GeoUtils.formatSpeed(maxSpeed(current)))
                 }
+                // Sprint 70: climb and descent side by side in their own row, so a
+                // hilly ride shows both ("up" alone used to read as ever-growing).
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    DetailStat(
+                        stringResource(R.string.stat_elevation),
+                        "\u25B2 " + GeoUtils.formatElevation(GeoUtils.totalAscent(current.points))
+                    )
+                    DetailStat(
+                        stringResource(R.string.stat_descent),
+                        "\u25BC " + GeoUtils.formatElevation(GeoUtils.totalDescent(current.points))
+                    )
+                }
+                // Sprint 69: high-quality trip photo (OSM scheme / Esri satellite).
+                TripPhotoCard(
+                    track = current,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 // Sprint 42: inline video block (progress while Running, embedded
                 // player when Done/archived) right under the map and stats.
                 VideoBlock(
@@ -539,6 +559,129 @@ private fun DetailStat(label: String, value: String) {
         Text(text = label, style = MaterialTheme.typography.bodySmall)
     }
 }
+
+/**
+ * Sprint 69: "Поделиться / сохранить фото поездки" - on-device HQ bitmap card.
+ * Two backdrops (OSM scheme like the live map / Esri satellite like the video),
+ * stats block bottom-centre, translucent elevation chart top-right with the route
+ * shining through. Save -> MediaStore gallery, share -> FileProvider ACTION_SEND.
+ * No new SDKs; OOM-safe (one bitmap at a time, recycled after save/share).
+ */
+@Composable
+private fun TripPhotoCard(
+    track: Track,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember(track.id) { mutableStateOf(false) }
+    var styleMenu by remember(track.id) { mutableStateOf(false) }
+    var saveNotice by remember(track.id) { mutableStateOf<String?>(null) }
+    if (track.points.isEmpty()) return
+    OutlinedButton(
+        onClick = { styleMenu = true },
+        modifier = modifier.fillMaxWidth(),
+        enabled = !busy
+    ) {
+        if (busy) {
+            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+        Text(
+            stringResource(R.string.action_share_trip_photo) +
+                if (busy) "…" else ""
+        )
+    }
+    if (styleMenu) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) styleMenu = false },
+            title = { Text(stringResource(R.string.share_trip_photo_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            styleMenu = false
+                            scope.launch {
+                                busy = true
+                                saveNotice = shareTripPhotoCard(
+                                    context, track,
+                                    com.alexander.routestory.utils.TripSnapshotRenderer.Style.SCHEMATIC
+                                )
+                                busy = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(stringResource(R.string.share_trip_photo_scheme)) }
+                    Button(
+                        onClick = {
+                            styleMenu = false
+                            scope.launch {
+                                busy = true
+                                saveNotice = shareTripPhotoCard(
+                                    context, track,
+                                    com.alexander.routestory.utils.TripSnapshotRenderer.Style.SATELLITE
+                                )
+                                busy = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text(stringResource(R.string.share_trip_photo_satellite)) }
+                    OutlinedButton(
+                        onClick = { styleMenu = false },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !busy
+                    ) { Text(stringResource(R.string.action_cancel)) }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+    saveNotice?.let { notice ->
+        Text(
+            text = notice,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * Renders the HQ card via the Hilt graph, saves it to the gallery (MediaStore) and
+ * opens the system share sheet (FileProvider). Returns a short status line for the UI.
+ * One bitmap at a time, recycled right after use (OOM care).
+ */
+private suspend fun shareTripPhotoCard(
+    context: android.content.Context,
+    track: Track,
+    style: com.alexander.routestory.utils.TripSnapshotRenderer.Style
+): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    val entry = dagger.hilt.EntryPoints.get(
+        context.applicationContext,
+        TripSnapshotEntryPoint::class.java
+    )
+    val bitmap = entry.tripSnapshotRenderer().render(track, style)
+        as? android.graphics.Bitmap
+    if (bitmap == null) {
+        return@withContext context.getString(R.string.share_trip_photo_error)
+    }
+    try {
+        entry.tripPhotoShareHelper().saveAndShare(bitmap, track)
+        context.getString(R.string.share_trip_photo_saved)
+    } catch (_: Exception) {
+        context.getString(R.string.share_trip_photo_error)
+    } finally {
+        if (!bitmap.isRecycled) bitmap.recycle()
+    }
+}
+
+/** Hilt entry point: the card is rendered from a @Composable without @Inject access. */
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+interface TripSnapshotEntryPoint {
+    fun tripSnapshotRenderer(): com.alexander.routestory.utils.TripSnapshotRenderer
+    fun tripPhotoShareHelper(): com.alexander.routestory.utils.TripPhotoShareHelper
+}
+
 @Composable
 private fun rememberPhotoBitmap(path: String, maxDim: Int): Bitmap? {
     return remember(path, maxDim) {
@@ -744,10 +887,16 @@ private fun VideoControls(
     modifier: Modifier = Modifier
 ) {
     // Sprint 64: one compact media bar drawn ON the bottom of the video frame.
-    // Play/pause on the left, the wide seek line in the middle (weight 1f), share
-    // and save on the right. A light scrim keeps the white controls readable on
-    // any frame of the clip.
+    // Sprint 69: play pinned left, share+save pinned right, timeline weight(1f) between
+    // them with gaps. Tap on the timeline seeks (fraction of width), drag as before.
+    // Plain clickable Boxes replace IconButton, whose built-in 48 dp minimum touch
+    // target would otherwise override the weights and squeeze the seek bar.
     var width by remember { mutableStateOf(1) }
+    fun seekFromX(x: Float) {
+        val target = (x / width.toFloat() * durationMs).toInt()
+            .coerceIn(0, durationMs.coerceAtLeast(0))
+        onSeek(target)
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -757,57 +906,84 @@ private fun VideoControls(
                     listOf(Color.Transparent, Color.Black.copy(alpha = 0.45f))
                 )
             )
-            .padding(horizontal = 4.dp),
+            .padding(start = 2.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onPlayPause) {
+        Box(
+            modifier = Modifier
+                .padding(end = 6.dp)
+                .fillMaxHeight()
+                .clickable { onPlayPause() },
+            contentAlignment = Alignment.Center
+        ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 contentDescription = stringResource(
                     if (isPlaying) R.string.action_pause else R.string.video_action_play
                 ),
                 tint = Color.White,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(27.dp)
             )
         }
         Box(
             modifier = Modifier
                 .weight(1f)
-                .height(24.dp)
+                .height(28.dp)
+                .padding(horizontal = 6.dp)
                 .onSizeChanged { width = it.width.coerceAtLeast(1) }
         ) {
             Canvas(
                 Modifier
                     .fillMaxSize()
                     .pointerInput(durationMs, width) {
+                        detectTapGestures(
+                            onTap = {
+                                seekFromX(it.x)
+                                onSeekFinished()
+                            }
+                        )
+                    }
+                    .pointerInput(durationMs, width) {
                         detectHorizontalDragGestures(
-                            onDragStart = { onSeek((it.x / width * durationMs).toInt()) },
-                            onHorizontalDrag = { change, _ -> onSeek((change.position.x / width * durationMs).toInt()) },
+                            onDragStart = { seekFromX(it.x) },
+                            onHorizontalDrag = { change, _ -> seekFromX(change.position.x) },
                             onDragEnd = { onSeekFinished() }
                         )
                     }
             ) {
                 val y = size.height / 2f
                 val p = (positionMs.toFloat() / durationMs.coerceAtLeast(1)).coerceIn(0f, 1f)
-                drawLine(Color.White.copy(alpha = .45f), Offset(0f, y), Offset(size.width, y), strokeWidth = 2.5f)
-                drawLine(Color.White, Offset(0f, y), Offset(size.width * p, y), strokeWidth = 2.5f)
-                drawCircle(Color.White, 4.5f, Offset(size.width * p, y))
+                drawLine(Color.White.copy(alpha = .45f), Offset(0f, y), Offset(size.width, y), strokeWidth = 2.8f)
+                drawLine(Color.White, Offset(0f, y), Offset(size.width * p, y), strokeWidth = 2.8f)
+                drawCircle(Color.White, 5f, Offset(size.width * p, y))
             }
         }
-        IconButton(onClick = onShare) {
+        Box(
+            modifier = Modifier
+                .padding(start = 6.dp)
+                .fillMaxHeight()
+                .clickable { onShare() },
+            contentAlignment = Alignment.Center
+        ) {
             Icon(
                 imageVector = Icons.Filled.Share,
                 contentDescription = stringResource(R.string.action_share),
                 tint = Color.White,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(22.dp)
             )
         }
-        IconButton(onClick = onSave) {
+        Box(
+            modifier = Modifier
+                .padding(start = 10.dp)
+                .fillMaxHeight()
+                .clickable { onSave() },
+            contentAlignment = Alignment.Center
+        ) {
             Icon(
                 imageVector = Icons.Filled.Save,
                 contentDescription = stringResource(R.string.action_save),
                 tint = Color.White,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(22.dp)
             )
         }
     }

@@ -21,9 +21,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
@@ -193,7 +195,13 @@ fun RouteMapPlaceholder(
      * Sprint 62: the builder renders its own GPS status (and a "turn GPS on" dialog), so it
      * switches this hint off to avoid a second "GPS is off" message on top of the dialog.
      */
-    warnNoFixOnLocate: Boolean = true
+    warnNoFixOnLocate: Boolean = true,
+    /**
+     * Sprint 68: whether the system GPS switch is on. The locate button must not claim
+     * "GPS is off" while the switch is on and the receiver is simply still looking for a
+     * first fix - that case says "searching for satellites" instead.
+     */
+    gpsEnabled: Boolean = true
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -245,7 +253,15 @@ fun RouteMapPlaceholder(
                 onWaypointMove = onWaypointMove,
                 initialCentre = initialCentre,
                 startMarkerIndex = startMarkerIndex,
-                mapLoadingText = if (!online) null else stringResource(R.string.loading_map)
+                // Sprint 69: "Ищем спутник…" only while GPS is ON but there is still no
+                // fix; tile loading says "Загрузка карты…60 секунд". With GPS off the
+                // offline/GPS notices win instead of a satellite hunt.
+                mapLoadingText = when {
+                    !online -> null
+                    currentPosition == null && points.isEmpty() && gpsEnabled ->
+                        stringResource(R.string.searching_gps)
+                    else -> stringResource(R.string.loading_map)
+                }
             )
             when {
                 !mapAllowed && !MapTiles.FORCE_OSM_CANVAS -> MapNotice(
@@ -272,6 +288,7 @@ fun RouteMapPlaceholder(
         }
         onLocate?.let {
             val gpsDisabledText = stringResource(R.string.gps_disabled)
+            val searchingText = stringResource(R.string.searching_gps)
             val myLocationText = stringResource(R.string.map_my_location)
             var flashing by remember { mutableStateOf(false) }
             val fabColor by animateColorAsState(
@@ -288,11 +305,15 @@ fun RouteMapPlaceholder(
                         delay(500)
                         flashing = false
                     }
-                    // No fix yet -> tell the user instead of silently doing nothing.
+                    // No fix yet -> tell the user WHY instead of silently doing nothing.
+                    // Sprint 68: GPS off and "still searching for satellites" are different
+                    // messages; the old code always blamed the GPS switch, so right after the
+                    // user turned GPS on the button still claimed it was off.
                     if (currentPosition == null && warnNoFixOnLocate) {
+                        val message = if (gpsEnabled) searchingText else gpsDisabledText
                         scope.launch {
                             snackbarHostState.showSnackbar(
-                                message = gpsDisabledText,
+                                message = message,
                                 duration = SnackbarDuration.Short
                             )
                         }
@@ -1152,5 +1173,13 @@ private fun BoxScope.RouteMapCanvas(
     }
     if (showMapLoading && mapLoadingText != null) {
         MapNotice(text = mapLoadingText, modifier = Modifier.align(Alignment.TopCenter))
+        // Sprint 68: a real spinner in the middle of the map - a static caption alone left
+        // the user unsure whether anything was still happening.
+        CircularProgressIndicator(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(32.dp),
+            strokeWidth = 3.dp
+        )
     }
 }

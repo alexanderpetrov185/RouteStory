@@ -10,6 +10,10 @@
     <string name="notif_recording">Идёт запись маршрута…</string>
     <string name="notif_paused">Запись на паузе</string>
     <string name="track_saved">Маршрут сохранён</string>
+    <string name="stat_elevation">Набор высоты</string>
+    <string name="stat_descent">Сброс высоты</string>
+    <string name="elevation_profile_label">Профиль высоты</string>
+    <string name="elevation_profile_pending">Профиль высоты появится во время записи</string>
     <string name="stat_distance">Дистанция</string>
     <string name="stat_time">Время</string>
     <string name="stat_speed">Скорость</string>
@@ -40,6 +44,12 @@
     <string name="video_preparing">Подготовка видео…</string>
     <string name="action_save">Сохранить</string>
     <string name="action_share">Поделиться</string>
+    <string name="action_share_trip_photo">Поделиться / сохранить фото поездки</string>
+    <string name="share_trip_photo_title">Фото поездки</string>
+    <string name="share_trip_photo_scheme">Схема (как карта записи)</string>
+    <string name="share_trip_photo_satellite">Спутник</string>
+    <string name="share_trip_photo_saved">Фото сохранено в галерею, открываю шаринг…</string>
+    <string name="share_trip_photo_error">Не удалось создать фото поездки</string>
     <string name="video_action_play">Воспроизвести</string>
     <string name="action_close">Закрыть</string>
     <string name="video_error">Ошибка генерации видео</string>
@@ -66,7 +76,7 @@
     <string name="map_my_location">Моё местоположение</string>
     <string name="waiting_gps">Ожидание GPS…</string>
     <string name="searching_gps">Ищем спутник…</string>
-    <string name="loading_map">Загружаем карту…</string>
+    <string name="loading_map">Загрузка карты, пожалуйста подождите. В некоторых случаях первая загрузка занимает до 60 секунд.</string>
     <string name="gps_disabled_short">GPS выключен</string>
     <string name="action_enable_gps">Включить GPS</string>
     <string name="offline_region">Нет доступа к картам. Подключитесь к Wi-Fi или проверьте соединение. Карта кэшируется; для записи достаточно GPS.</string>

@@ -2,4 +2,5 @@
 <paths>
     <files-path name="photos" path="photos/" />
     <files-path name="videos" path="videos/" />
+    <files-path name="trip_photos" path="trip_photos/" />
 </paths>
