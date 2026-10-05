@@ -118,7 +118,8 @@ private fun TrackListItem(track: Track, onClick: () -> Unit, onDelete: () -> Uni
             Column(modifier = Modifier.weight(1f)) {
                 Text(track.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    GeoUtils.formatDate(track.startTime),
+                    // Sprint 68: start-end window in the device time zone.
+                    GeoUtils.formatTimeRange(track.startTime, track.endTime),
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(

@@ -428,7 +428,7 @@ class TrackRecordingService : LifecycleService() {
             ?: end
         val duration = accumulatedMs.takeIf { it > 0L } ?: (end - start).coerceAtLeast(0L)
         // Light-hearted auto name from distance/duration; the user can rename in the summary.
-        val name = com.alexander.routestory.utils.TripNames.generate(distance, duration, end)
+        val name = com.alexander.routestory.utils.TripNames.generate(distance, duration, end, start)
         points.clear()
         totalDistanceM = 0f
         lastSpeedMps = 0f
@@ -481,9 +481,6 @@ class TrackRecordingService : LifecycleService() {
     }
 
     private fun handleLocation(location: Location) {
-        // The live "me" dot must move on every fix, even when the point is too noisy
-        // or too close to be stored in the recorded track.
-        stateHolder.update { it.copy(lastFix = location.latitude to location.longitude) }
         val candidate = TrackPoint(
             lat = location.latitude,
             lon = location.longitude,
@@ -504,12 +501,24 @@ class TrackRecordingService : LifecycleService() {
                 if (jump > MAX_START_JUMP_M) {
                     Log.i("TrackService", "start teleport ignored: ${jump.toInt()} m")
                     startAnchor = candidate.lat to candidate.lon
+                    updateDisplayFix(candidate)
                     pushLiveState()
                     return
                 }
             }
         }
+        // Sprint 68: the filters run BEFORE the "me" dot is moved, so a wild fix can no longer
+        // make the marker jump across the map. Previously lastFix was published first and the
+        // filtering only affected the recorded log.
         if (!LocationFilter.shouldAccept(previous, candidate)) return
+        if (!LocationFilter.shouldAcceptWhileStationary(previous, candidate)) return
+        updateDisplayFix(candidate)
+        // Sprint 68: standing still (indoor jitter < MIN_RECORD_DISTANCE_M) keeps the live dot
+        // alive but writes no point, so a stationary ride stays a dot instead of a scribble.
+        if (!LocationFilter.isRecordableMove(previous, candidate)) {
+            pushLiveState()
+            return
+        }
         if (LocationFilter.isSignificantMove(previous, candidate)) {
             previous?.let { totalDistanceM += GeoUtils.distanceMeters(it, candidate) }
         }
@@ -533,6 +542,26 @@ class TrackRecordingService : LifecycleService() {
             computedSpeed()
         }
         pushLiveState()
+    }
+
+    /**
+     * Sprint 68: smooths the live "me" dot.
+     *
+     * The recorded track keeps the RAW accepted coordinates - smoothing those would eat the
+     * corners of a real ride. The dot on the map, however, is only a display aid, so it is
+     * eased towards the new fix (alpha 0.35): a stationary phone stops twitching, and a
+     * moving one loses at most a fraction of one 2 s update.
+     */
+    private fun updateDisplayFix(candidate: TrackPoint) {
+        val current = stateHolder.uiState.value.lastFix
+        val next = if (current == null) {
+            candidate.lat to candidate.lon
+        } else {
+            val lat = current.first + (candidate.lat - current.first) * DISPLAY_FIX_ALPHA
+            val lon = current.second + (candidate.lon - current.second) * DISPLAY_FIX_ALPHA
+            lat to lon
+        }
+        stateHolder.update { it.copy(lastFix = next) }
     }
 
     /** Speed derived from the last two recorded points, used when the fix reports no speed. */
@@ -708,5 +737,10 @@ class TrackRecordingService : LifecycleService() {
         private const val DRAFT_POINT_STEP = 10
         /** Distance below which a new GPS fix is considered "standing still" for speed display. */
         private const val STATIONARY_DISTANCE_M = 5f
+        /**
+         * Sprint 68: easing factor for the DISPLAYED "me" dot only (raw points stay untouched).
+         * 0.35 removes the indoor twitching without cutting the corners of a real ride.
+         */
+        private const val DISPLAY_FIX_ALPHA = 0.35f
     }
 }
