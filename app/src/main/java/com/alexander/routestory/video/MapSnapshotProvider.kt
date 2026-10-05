@@ -267,6 +267,42 @@ class MapSnapshotProvider @Inject constructor(
                 right <= rect[2] && bottom <= rect[3]
         }
 
+        /**
+         * Sprint 70: cover-clamp for the video camera centre (pure, unit-tested).
+         *
+         * The backdrop is drawn frame-sized in local space, then panned around the
+         * centre and scaled by [cameraZoom]; the tilt phase further warps the frame
+         * (its effect arrives precomputed as [tiltMin*]/[tiltMax*], the bbox of the
+         * frame mapped back through the tilt inverse). Per axis the centre is valid
+         * only while the required window stays inside the content rect:
+         * `C in [lo, hi]` with `lo = (size/2 - min)/zoom` and
+         * `hi = size - (max - size/2)/zoom`. Clamping keeps every map frame filled
+         * with satellite imagery — no edge stretching, no drag back to the track
+         * centroid. Falls back to the frame centre on degenerate input.
+         */
+        fun clampCenterForCover(
+            centerX: Float,
+            centerY: Float,
+            tiltMinX: Float,
+            tiltMaxX: Float,
+            tiltMinY: Float,
+            tiltMaxY: Float,
+            cameraZoom: Float,
+            width: Float,
+            height: Float
+        ): Pair<Float, Float> {
+            if (cameraZoom <= 0f || !cameraZoom.isFinite()) return width / 2f to height / 2f
+            fun clampAxis(c: Float, min: Float, max: Float, size: Float): Float {
+                if (!c.isFinite() || !min.isFinite() || !max.isFinite()) return size / 2f
+                val lo = (size / 2f - min) / cameraZoom
+                val hi = size - (max - size / 2f) / cameraZoom
+                if (lo > hi) return size / 2f
+                return c.coerceIn(lo, hi)
+            }
+            return clampAxis(centerX, tiltMinX, tiltMaxX, width) to
+                clampAxis(centerY, tiltMinY, tiltMaxY, height)
+        }
+
         private fun pickZoom(
             minLat: Double, maxLat: Double, minLon: Double, maxLon: Double,
             w: Int, h: Int

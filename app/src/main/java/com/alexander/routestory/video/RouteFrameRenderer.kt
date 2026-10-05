@@ -101,6 +101,34 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         textSize = 30f
         typeface = Typeface.DEFAULT_BOLD
     }
+    /**
+     * Sprint 68: elevation HUD typography and backdrop. Upright screen-space pill in the
+     * top-right corner, separate from the tilted map transform.
+     */
+    private val climbTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 28f
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    private val climbBackdropPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(110, 0, 0, 0)
+    }
+    /** Sprint 70: relief area/line + progress marker for the HUD chart. */
+    private val climbAreaPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(110, 76, 175, 80)
+    }
+    private val climbLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(165, 255, 176)
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+    }
+    private val climbProgressPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        strokeWidth = 3f
+    }
+    private val climbDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+    }
     private val photoPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     /** Solid wash behind a full-screen photo so the map does not bleed through the fades. */
     private val photoBackdropPaint = Paint().apply { color = Color.BLACK }
@@ -152,6 +180,12 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         const val TILT_COVER_MARGIN = 0.03f
         /** Sanity ceiling so an extreme pitch can never eat the whole composition. */
         const val TILT_COVER_MAX = 1.9f
+        /**
+         * Sprint 68: the sharp follow segment is only drawn when it covers this share of
+         * the camera window. Below it the frame stays a single full-frame overview layer
+         * instead of flashing a partially covered HQ patch.
+         */
+        const val FOLLOW_MIN_COVERAGE = 0.95f
     }
 
     /**
@@ -167,6 +201,53 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private var tiltKey = -1
     private var tiltAmountCached = -1f
     private var tiltMatrix = android.graphics.Matrix()
+    /**
+     * Sprint 70: bbox of the frame mapped back through the tilt inverse, relative
+     * to the frame origin (minX, maxX, minY, maxY). The camera pan clamp needs it:
+     * at low zoom a marker-centred view pulls the required content window outside
+     * the frame-sized backdrop and would expose [bgPaint]. Same cache key as
+     * [tiltFor], so the four extra mapped corners are free.
+     */
+    private var tiltBoxKey = -1
+    private var tiltBoxAmountCached = -1f
+    private var tiltBox = floatArrayOf(0f, 0f, 0f, 0f)
+
+    /**
+     * Returns (minX, maxX, minY, maxY) of the frame corners mapped through the
+     * inverse tilt matrix. At amount=0 the tilt is identity and the box is the
+     * frame itself. Failures fall back to the frame box (clamp then covers the
+     * plain-camera case instead of drifting).
+     */
+    private fun tiltBoxFor(w: Float, h: Float, amount: Float): FloatArray {
+        val key = ((w.toInt() shl 16) xor h.toInt()) + (amount.coerceIn(0f, 1f) * 100).toInt() * 1_000_003
+        if (key != tiltBoxKey || tiltBoxAmountCached != amount) {
+            tiltBoxKey = key
+            tiltBoxAmountCached = amount
+            val inverse = android.graphics.Matrix()
+            val ok = tiltFor(w, h, amount).invert(inverse)
+            tiltBox = if (!ok) {
+                floatArrayOf(0f, w, 0f, h)
+            } else {
+                val pts = floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h)
+                inverse.mapPoints(pts)
+                var minX = Float.POSITIVE_INFINITY
+                var maxX = Float.NEGATIVE_INFINITY
+                var minY = Float.POSITIVE_INFINITY
+                var maxY = Float.NEGATIVE_INFINITY
+                var i = 0
+                while (i < pts.size) {
+                    val x = pts[i]
+                    val y = pts[i + 1]
+                    if (x.isFinite()) { minX = min(minX, x); maxX = max(maxX, x) }
+                    if (y.isFinite()) { minY = min(minY, y); maxY = max(maxY, y) }
+                    i += 2
+                }
+                if (!minX.isFinite() || !maxX.isFinite()) floatArrayOf(0f, w, 0f, h)
+                else floatArrayOf(minX, maxX, minY, maxY)
+            }
+        }
+        return tiltBox
+    }
 
     /**
      * Perspective matrix for the map group: rotateX around the frame centre, then scale up just
@@ -436,6 +517,22 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     private var camDrawable: android.graphics.drawable.Drawable? = null
 
     /**
+     * Sprint 68: one-frame grace under the coverage gate - the bitmap/rect drawn on the
+     * previous frame, so crossing the boundary does not blink the patch on and off.
+     */
+    private var lastSharpBitmap: Bitmap? = null
+    private var lastSharpRect: android.graphics.RectF? = null
+    private var lastSharpFrame = -10
+
+    /** Sprint 68: cumulative climb profile cache; recomputed only for a new track. */
+    private var climbTrack: Track? = null
+    private var climbCumulative: FloatArray = FloatArray(0)
+    /** Sprint 70: smoothed relief + cumulative descent for the HUD chart. */
+    private var climbProfile: FloatArray = FloatArray(0)
+    private var climbDescent: FloatArray = FloatArray(0)
+    private var climbTotals: Pair<Float, Float> = 0f to 0f
+
+    /**
      * Sprint 41: vector checkered finish flag - pole up from the route end plus a
      * 3x2 checker board. Drawn in the same projection as the overlay, so it sticks
      * to the last track point through zoom/tilt. Sizes scale with the current
@@ -622,17 +719,34 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         // camera back.
         val cameraZoom = zoomRamp * (1f - zoomOut) + zoomOut
         val (baseX, baseY) = baseProject(curLat, curLon)
-        // Sprint 36: the camera centre is the marker position itself - recomputed
-        // every frame, no lerp toward screen centre, no clamp to the overview edges.
-        // In the ZOOM phase it glides from the frame centre onto the start marker;
-        // in MOVE (follow >= 0.5) it is locked to the marker so the camera can
-        // never drift away.
-        val rawCenterX = if (follow >= 0.5f) baseX else (w / 2 + (baseX - w / 2) * follow)
-        val rawCenterY = if (follow >= 0.5f) baseY else (h / 2 + (baseY - h / 2) * follow)
+        // Sprint 68: the camera opens ON the START marker, not on the bbox centre.
+        //
+        // The old blend pulled the first map frames toward the frame centre, which on a long
+        // ride is the middle of the whole route - the tilt/zoom-in played over an unrelated
+        // place and the camera "teleported" onto the start once follow reached 0.5.
+        // Now the centre is anchored to the start point and glides from there to the moving
+        // marker as follow ramps up, so tilt, zoom-in and MOVE share one continuous path.
+        val (startX, startY) = baseProject(track.points.first().lat, track.points.first().lon)
+        val rawCenterX = startX + (baseX - startX) * follow
+        val rawCenterY = startY + (baseY - startY) * follow
         // Sprint 49: while pulling back, pan from the marker to the overview centre so
         // the whole route lands in the frame; the outro stays centred.
-        val centerX = w / 2 + (rawCenterX - w / 2) * (1f - finishT)
-        val centerY = h / 2 + (rawCenterY - h / 2) * (1f - finishT)
+        // Sprint 70: cover-clamp the FINAL centre (post finish blend) against the
+        // real tilt bbox: the backdrop is drawn frame-sized in local space, so any
+        // off-centre view at low zoom pulls the required window outside the content
+        // rect and exposes bgPaint ("edge of the world"). The clamp only trims the
+        // pan to the content bounds — never toward the track centroid, no bitmap
+        // stretching — and goes slack at MOVE zooms, where the marker stays centred.
+        val pulledX = w / 2 + (rawCenterX - w / 2) * (1f - finishT)
+        val pulledY = h / 2 + (rawCenterY - h / 2) * (1f - finishT)
+        val tiltBox = tiltBoxFor(w, h, tl.tiltAmount(frame))
+        val clamped = MapSnapshotProvider.clampCenterForCover(
+            pulledX, pulledY,
+            tiltBox[0], tiltBox[1], tiltBox[2], tiltBox[3],
+            cameraZoom, w, h
+        )
+        val centerX = clamped.first
+        val centerY = clamped.second
         fun project(lat: Double, lon: Double): Pair<Float, Float> {
             val (x, y) = baseProject(lat, lon)
             return (x - centerX) * cameraZoom + w / 2 to (y - centerY) * cameraZoom + h / 2
@@ -682,9 +796,31 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         //
         // Below FOLLOW_SWITCH (and through ZOOM and FINISH) the frame is ONE layer: the
         // overview, cover-scaled, so no seam can appear.
+        //
+        // Sprint 68: the selected segment is only drawn when it actually covers the camera
+        // window ([FOLLOW_MIN_COVERAGE]). A partially covering rect left the top/bottom edge
+        // on the stretched overview and read as a flickering HQ patch for a couple of frames.
+        // One-frame grace keeps a single earlier layer, so crossing a coverage boundary can
+        // not blink the patch off and on again.
         val isMove = follow >= FOLLOW_SWITCH && !tl.isFinish(frame)
         val candidates = if (isMove) followSegments.indices.mapNotNull(::layer) else emptyList()
-        val sharpLayer = candidates.maxByOrNull { it.coverage }
+        val best = candidates.maxByOrNull { it.coverage }
+        val accepted = best != null && best.coverage >= FOLLOW_MIN_COVERAGE
+        val sharpBitmap: Bitmap?
+        val sharpRect: android.graphics.RectF?
+        if (accepted) {
+            sharpBitmap = best!!.bitmap
+            sharpRect = best.rect
+        } else if (isMove && lastSharpFrame == frame - 1 && lastSharpBitmap != null) {
+            sharpBitmap = lastSharpBitmap
+            sharpRect = lastSharpRect
+        } else {
+            sharpBitmap = null
+            sharpRect = null
+        }
+        lastSharpBitmap = sharpBitmap
+        lastSharpRect = sharpRect
+        lastSharpFrame = frame
         // Sprint 63: the overview is the base layer whenever tiles are available; the sharp
         // segment only paints over it. No frame region can reach [bgPaint] anymore. When the
         // overview snapshot is missing, the follow crop itself stretches over the frame as
@@ -694,12 +830,12 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
         if (frame % 30 == 0 && isMove) {
             android.util.Log.d(
                 "VideoExport",
-                "follow segmentIndex=${sharpLayer?.index ?: -1} " +
-                    "coversFrame=${sharpLayer != null && sharpLayer.coverage >= 0.999f} " +
-                    "coverage=${"%.3f".format(sharpLayer?.coverage ?: 0f)} overviewBase=${background != null}"
+                "follow drawn=${sharpBitmap != null} " +
+                    "coverage=${"%.3f".format(best?.coverage ?: 0f)} " +
+                    "grace=${!accepted && sharpBitmap != null} overviewBase=${background != null}"
             )
         }
-        if (overviewBase != null || sharpLayer != null) {
+        if (overviewBase != null || sharpBitmap != null) {
             canvas.save()
             canvas.translate(w / 2, h / 2)
             canvas.scale(cameraZoom, cameraZoom)
@@ -710,8 +846,8 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
                     android.graphics.RectF(0f, 0f, w, h), null)
             }
             // 2) The sharp follow crop on top, inside the very same overview space.
-            sharpLayer?.let { layer ->
-                canvas.drawBitmap(brightenOnce(layer.bitmap), null, layer.rect, null)
+            if (sharpBitmap != null && sharpRect != null) {
+                canvas.drawBitmap(brightenOnce(sharpBitmap), null, sharpRect, null)
             }
             canvas.restore()
         }
@@ -862,7 +998,35 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
             }
         }
 
-        drawTexts(track, canvas, w, h)
+        drawTexts(track, canvas, w, h, climbAtFrame(track, tl, progress))
+    }
+
+    /**
+     * Sprint 70: relief + climb/descent-so-far for the HUD chart. Cached per
+     * track, so a frame costs array lookups instead of profile passes.
+     * Returns null for degenerate tracks (caller hides the panel entirely).
+     */
+    private data class ClimbHud(
+        val profile: FloatArray,
+        val ascent: FloatArray,
+        val descent: FloatArray,
+        val index: Int
+    )
+
+    private fun climbAtFrame(track: Track, tl: RouteVideoTimeline, progress: Float): ClimbHud? {
+        if (track.points.size < 2) return null
+        if (climbTrack !== track) {
+            climbTrack = track
+            climbProfile = com.alexander.routestory.utils.GeoUtils.elevationProfile(track.points)
+            climbCumulative = com.alexander.routestory.utils.GeoUtils.cumulativeAscent(track.points)
+            climbDescent = com.alexander.routestory.utils.GeoUtils.cumulativeDescent(track.points)
+            climbTotals = com.alexander.routestory.utils.GeoUtils.totalAscent(track.points) to
+                com.alexander.routestory.utils.GeoUtils.totalDescent(track.points)
+        }
+        return ClimbHud(
+            climbProfile, climbCumulative, climbDescent,
+            tl.pointIndex(progress).coerceIn(0, climbProfile.lastIndex)
+        )
     }
 
     /** Intro card: dark/sat-dimmed backdrop + app name, ride name, one stats line. */
@@ -910,9 +1074,66 @@ class RouteFrameRenderer(private val limits: VideoLimits) {
     }
 
     /** Watermark only during the map part: no stats or long captions over the moving route. */
-    private fun drawTexts(track: Track, canvas: Canvas, w: Float, h: Float) {
+    private fun drawTexts(track: Track, canvas: Canvas, w: Float, h: Float, hud: ClimbHud? = null) {
         limits.watermark?.let { wm ->
             canvas.drawText(wm, w - 28f - watermarkPaint.measureText(wm), h - 28f, watermarkPaint)
+        }
+        // Sprint 70: translucent relief chart in the top-right corner instead of the
+        // old "one number" climb pill. Drawn here in screen space (all map transforms
+        // are already restored above), so it always stays upright, and the
+        // translucent backdrop keeps the satellite route readable underneath.
+        if (hud != null && hud.profile.size >= 2) {
+            val ascent = hud.ascent.getOrElse(hud.index) { 0f }
+            val descent = hud.descent.getOrElse(hud.index) { 0f }
+            val label = "\u25B2 " + com.alexander.routestory.utils.GeoUtils.formatElevation(ascent) +
+                "  \u25BC " + com.alexander.routestory.utils.GeoUtils.formatElevation(descent)
+            val pad = 14f
+            val textH = 48f
+            val chartH = h * 0.075f
+            val top = 20f
+            val panelW = w * 0.30f
+            val left = w - 28f - panelW
+            val labelW = climbTextPaint.measureText(label)
+            val right = left + panelW
+            val chartTop = top + textH
+            val bottom = chartTop + chartH + pad
+            // Panel sized by the wider of label and minimum width so short labels
+            // (e.g. "0 m") never shrink the panel past the chart.
+            val boxRight = maxOf(right, left + labelW + pad * 2f)
+            canvas.drawRoundRect(
+                android.graphics.RectF(left, top, boxRight, bottom),
+                14f, 14f, climbBackdropPaint
+            )
+            canvas.drawText(label, left + pad, top + 34f, climbTextPaint)
+            val p = hud.profile
+            val min = p.minOrNull() ?: 0f
+            val range = (p.maxOrNull() ?: 0f) - min
+            val chartLeft = left + pad
+            val chartRight = maxOf(right - pad, chartLeft + 2f)
+            if (range > 0.5f) {
+                fun xOf(i: Int): Float =
+                    chartLeft + i.toFloat() / (p.size - 1) * (chartRight - chartLeft)
+                fun yOf(v: Float): Float =
+                    chartTop + chartH - 4f - ((v - min) / range) * (chartH - 8f)
+                val area = android.graphics.Path().apply {
+                    moveTo(chartLeft, chartTop + chartH)
+                    for (i in p.indices) lineTo(xOf(i), yOf(p[i]))
+                    lineTo(chartRight, chartTop + chartH)
+                    close()
+                }
+                canvas.drawPath(area, climbAreaPaint)
+                val line = android.graphics.Path().apply {
+                    for (i in p.indices) {
+                        if (i == 0) moveTo(xOf(i), yOf(p[i]))
+                        else lineTo(xOf(i), yOf(p[i]))
+                    }
+                }
+                canvas.drawPath(line, climbLinePaint)
+                // Current marker position along the relief.
+                val px = xOf(hud.index.coerceIn(0, p.lastIndex))
+                canvas.drawLine(px, chartTop, px, chartTop + chartH, climbProgressPaint)
+                canvas.drawCircle(px, yOf(p[hud.index.coerceIn(0, p.lastIndex)]), 6f, climbDotPaint)
+            }
         }
     }
 

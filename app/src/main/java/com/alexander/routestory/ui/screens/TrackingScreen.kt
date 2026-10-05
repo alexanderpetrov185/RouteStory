@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -254,6 +255,8 @@ fun TrackingScreen(
                 followLastPoint = true,
                 currentPosition = state.lastFix,
                 locateTick = locateTick,
+                // Sprint 68: lets the locate button say "searching" instead of "GPS off".
+                gpsEnabled = gpsEnabled,
                 onLocate = {
                     locateTick++
                     viewModel.requestInitialFix(force = true)
@@ -263,10 +266,62 @@ fun TrackingScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
+                // Sprint 69: ascent next to distance/time/speed (hysteresis-filtered).
+                val ascentM = remember(state.points.size) {
+                    GeoUtils.totalAscent(state.points)
+                }
                 StatItem(stringResource(R.string.stat_distance), GeoUtils.formatDistance(state.distanceMeters))
                 StatItem(stringResource(R.string.stat_time), GeoUtils.formatDuration(state.durationMs))
                 StatItem(stringResource(R.string.stat_speed), GeoUtils.formatSpeed(state.speedMps))
+                StatItem(
+                    stringResource(R.string.stat_elevation),
+                    GeoUtils.formatElevation(ascentM)
+                )
             }
+            // Sprint 69: compact elevation profile under the stats, between stats
+            // and map (never overlaps the map). Sprint 70: the chart shows the
+            // smoothed RELIEF (ups and downs, normalised min..max) with a caption
+            // and live climb/descent totals instead of a monotone climb line.
+            val totalsLine = remember(state.points.size) {
+                if (state.points.size >= 2) {
+                    val a = GeoUtils.cumulativeAscent(state.points).lastOrNull() ?: 0f
+                    val d = GeoUtils.cumulativeDescent(state.points).lastOrNull() ?: 0f
+                    "\u25B2 " + GeoUtils.formatElevation(a) +
+                        "   \u25BC " + GeoUtils.formatElevation(d)
+                } else null
+            }
+            if (totalsLine == null) {
+                Text(
+                    text = stringResource(R.string.elevation_profile_pending),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = stringResource(R.string.elevation_profile_label),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = totalsLine,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            ElevationSparkline(
+                points = state.points,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+            )
             val photoCounter = if (viewModel.photoLimit == Int.MAX_VALUE) "${state.photos.size}"
             else "${state.photos.size}/${viewModel.photoLimit}"
             val photoLabel = stringResource(R.string.photo_action) + " · " + photoCounter
@@ -455,6 +510,63 @@ private fun StatItem(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text = value, style = MaterialTheme.typography.titleLarge)
         Text(text = label, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/**
+ * Sprint 69: compact elevation sparkline (area + line), drawn under the stats
+ * and above the map - a flat track renders as a baseline, never blank.
+ * Sprint 70: the chart shows the smoothed RELIEF ([GeoUtils.elevationProfile],
+ * ups and downs, normalised min..max), not the monotone cumulative climb.
+ */
+@Composable
+private fun ElevationSparkline(
+    points: List<com.alexander.routestory.domain.TrackPoint>,
+    modifier: Modifier = Modifier
+) {
+    val profile = remember(points.size) { GeoUtils.elevationProfile(points) }
+    val min = remember(profile) { profile.minOrNull() ?: 0f }
+    val range = remember(profile) { (profile.maxOrNull() ?: 0f) - min }
+    Canvas(
+        modifier = modifier.height(40.dp)
+    ) {
+        if (profile.size < 2 || range <= 0.5f) {
+            val y = size.height - 2f
+            drawLine(
+                color = androidx.compose.ui.graphics.Color.Gray.copy(alpha = 0.6f),
+                start = androidx.compose.ui.geometry.Offset(0f, y),
+                end = androidx.compose.ui.geometry.Offset(size.width, y),
+                strokeWidth = 2f
+            )
+            return@Canvas
+        }
+        fun yOf(value: Float): Float =
+            size.height - ((value - min) / range) * (size.height - 6f) - 2f
+        val stepX = size.width / (profile.size - 1)
+        val path = androidx.compose.ui.graphics.Path().apply {
+            moveTo(0f, size.height)
+            for (i in profile.indices) {
+                lineTo(i * stepX, yOf(profile[i]))
+            }
+            lineTo(size.width, size.height)
+            close()
+        }
+        drawPath(
+            path = path,
+            color = androidx.compose.ui.graphics.Color(0xFF4CAF50).copy(alpha = 0.35f)
+        )
+        val line = androidx.compose.ui.graphics.Path().apply {
+            for (i in profile.indices) {
+                val x = i * stepX
+                val y = yOf(profile[i])
+                if (i == 0) moveTo(x, y) else lineTo(x, y)
+            }
+        }
+        drawPath(
+            path = line,
+            color = androidx.compose.ui.graphics.Color(0xFF4CAF50),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f)
+        )
     }
 }
 
